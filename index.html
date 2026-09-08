@@ -298,6 +298,8 @@
       #cyclePanel .cycle-presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.2rem, 1fr)); gap: 0.35rem; margin: 0.55rem 0 0.75rem; }
       #cyclePanel button { justify-content: center; text-decoration: none; background: #e9e4dc12; border: 1px solid #e9e4dc33; border-radius: 6px; }
       #cyclePanel button:hover { background: #e9e4dc28; }
+      #cyclePanel .calendar-navigation { grid-template-columns: 1fr auto 1fr; }
+      #calendarYearValue { align-self: center; text-align: center; font-variant-numeric: tabular-nums; }
       #cyclePanel select { width: 100%; min-height: 44px; padding: 0.4rem; font: inherit; color: inherit; background: #203b30; border: 1px solid #e9e4dc55; border-radius: 6px; }
       #cyclePanel p { font-size: 0.8rem; line-height: 1.5; margin: 0.9rem 0 0; opacity: 0.85; }
       #cyclePanel .world-map { margin: 0.6rem 0; }
@@ -421,15 +423,22 @@
               </div>
               <button class="apply-location" type="submit">Apply coordinates</button>
             </form>
-            <p id="climateStatus" role="status">ERA5 · 1991–2020 daily normals</p>
-            <button id="retryClimate" type="button" hidden>Retry climate</button>
+            <p id="climateStatus" role="status">ERA5 · 2004-08-21 · daily weather</p>
+            <button id="retryClimate" type="button" hidden>Retry weather</button>
             <div class="climate-stats">
-              <div><span>Typical low / high</span><output id="temperatureValue"></output></div>
+              <div><span>Daily low / high</span><output id="temperatureValue"></output></div>
               <div><span>Precipitation</span><output id="precipitationValue"></output></div>
               <div><span>Estimated vegetation</span><output id="vegetationValue"></output></div>
             </div>
             <p id="climateVariation"></p>
-            <p>Climate data: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo / ERA5</a>, averaged by calendar day. Loaded locations are cached offline. The landscape is procedural, with climate-estimated vegetation.</p>
+            <label for="weatherCacheDays">Weather cache · days either side</label>
+            <select id="weatherCacheDays">
+              <option value="0">Selected day only · 1 day</option><option value="3">±3 days · 7 days</option>
+              <option value="7" selected>±1 week · 15 days</option><option value="14">±2 weeks · 29 days</option>
+              <option value="30">±30 days · 61 days</option>
+            </select>
+            <p>Saved dates: <span id="cacheRange"></span>. A missing date loads a window around it. Smaller ranges save data; larger ranges allow more offline exploring.</p>
+            <p>Climate data: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo / ERA5</a>, daily historical weather. Cached dates work offline. The landscape and vegetation are procedural estimates.</p>
           </fieldset>
           <fieldset>
             <legend>Time of day</legend>
@@ -462,9 +471,15 @@
           <fieldset>
             <legend>Season</legend>
             <label for="calendarDate">Calendar date</label>
-            <input id="calendarDate" type="date" min="1901-01-01" max="2099-12-31" />
+            <input id="calendarDate" type="date" min="1901-01-01" max="2099-12-31" value="2004-08-21" />
+            <div class="cycle-presets calendar-navigation" role="group" aria-label="Change calendar year">
+              <button type="button" data-year-step="-1" aria-label="Previous year">← Year</button>
+              <output id="calendarYearValue" aria-live="polite">2004</output>
+              <button type="button" data-year-step="1" aria-label="Next year">Year →</button>
+            </div>
+            <p>Opens on 2004-08-21. Calendar changes also move the season slider. February 29 becomes February 28 in a non-leap year.</p>
             <p id="hemisphereValue"></p>
-            <div class="cycle-label"><label for="seasonOfYear">Year</label><output id="seasonValue" for="seasonOfYear" aria-live="off">Summer</output></div>
+            <div class="cycle-label"><label for="seasonOfYear">Season in selected year</label><output id="seasonValue" for="seasonOfYear" aria-live="off">Summer</output></div>
             <input id="seasonOfYear" type="range" min="0" max="4" step="0.01" value="1" list="seasonTicks" />
             <datalist id="seasonTicks"><option value="0"></option><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option></datalist>
             <div class="cycle-scale" aria-hidden="true"><span>Spring</span><span>Summer</span><span>Autumn</span><span>Winter</span><span>Spring</span></div>
@@ -1554,6 +1569,15 @@ function seasonForDate(date, latitude) {
   return 0;
 }
 
+// Keep the month/day when jumping years; leap day clamps to February 28.
+function shiftCalendarYear(date, step) {
+  if (!validDate(date) || !Number.isInteger(step)) return date;
+  const year = Math.min(2099, Math.max(1901, +date.slice(0, 4) + step));
+  const month = +date.slice(5, 7), day = +date.slice(8, 10);
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+}
+
 __exports.DAY_MS = DAY_MS;
 __exports.SUNRISE_ALTITUDE = SUNRISE_ALTITUDE;
 __exports.solarCoordinates = solarCoordinates;
@@ -1571,103 +1595,116 @@ __exports.phaseAtHour = phaseAtHour;
 __exports.daysInYear = daysInYear;
 __exports.dateForSeason = dateForSeason;
 __exports.seasonForDate = seasonForDate;
+__exports.shiftCalendarYear = shiftCalendarYear;
 return __exports;
 })();
 __modules["src/climate.js"] = (() => {
 const __exports = {};
 
-// Daily climate normals, not a forecast. Temperatures are °C; water is mm.
-// ERA5 is selected explicitly so the 1991–2020 series does not mix models.
-const CLIMATE_PERIOD = '1991–2020';
+// Actual historical daily weather. Temperatures are °C; water is mm/day.
+// Requests are bounded date windows, never multi-year climate normals.
+const DEFAULT_DATE = '2004-08-21';
+const CACHE_DAY_OPTIONS = [0, 3, 7, 14, 30];
 const CLIMATE_FIELDS = ['temperature_2m_min', 'temperature_2m_max', 'temperature_2m_mean', 'precipitation_sum', 'et0_fao_evapotranspiration'];
 const DAY = 86400000;
 const clamp01 = x => Math.min(1, Math.max(0, x));
 const smooth = (a, b, v) => { const t = clamp01((v - a) / (b - a)); return t * t * (3 - 2 * t); };
 const mean = values => values.reduce((sum, v) => sum + v, 0) / values.length;
-
+const stamp = date => Date.parse(date + 'T00:00:00Z');
+const iso = utc => new Date(utc).toISOString().slice(0, 10);
+const isDate = date => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+  && Number.isFinite(stamp(date)) && iso(stamp(date)) === date;
+function validCacheDays(days) { return CACHE_DAY_OPTIONS.includes(days) ? days : 7; }
 function climateKey(latitude, longitude) { return `${latitude.toFixed(3)},${longitude.toFixed(3)}`; }
 function validCoordinates(latitude, longitude) {
   return Number.isFinite(latitude) && Number.isFinite(longitude) && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
 }
-function climateURL(latitude, longitude) {
+function weatherWindow(date, days = 7, now = Date.now()) {
+  if (!isDate(date)) return null;
+  // ERA5 archive has a publication delay. Do not repeatedly request unavailable days.
+  const first = stamp('1940-01-01'), last = Math.floor(now / DAY) * DAY - 5 * DAY;
+  const selected = stamp(date), radius = validCacheDays(days) * DAY;
+  if (selected < first || selected > last) return null;
+  return { startDate: iso(Math.max(first, selected - radius)), endDate: iso(Math.min(last, selected + radius)) };
+}
+function climateURL(latitude, longitude, window) {
   if (!validCoordinates(latitude, longitude)) throw new Error('Coordinates are outside the world');
-  const query = new URLSearchParams({ latitude, longitude, start_date: '1991-01-01', end_date: '2020-12-31',
+  if (!window || !isDate(window.startDate) || !isDate(window.endDate)
+    || window.startDate > window.endDate || stamp(window.endDate) - stamp(window.startDate) > 60 * DAY)
+    throw new Error('Weather requests must contain at most 61 consecutive days');
+  const query = new URLSearchParams({ latitude, longitude, start_date: window.startDate, end_date: window.endDate,
     daily: CLIMATE_FIELDS.join(','), timezone: 'auto', models: 'era5', cell_selection: 'nearest' });
   return `https://archive-api.open-meteo.com/v1/archive?${query}`;
 }
-
 function calendarIndex(date) {
-  const monthDay = date.slice(5);
-  if (monthDay === '02-29') return 58.5;
-  return (Date.parse(`2001-${monthDay}T00:00:00Z`) - Date.UTC(2001, 0, 1)) / DAY;
+  if (date.slice(5) === '02-29') return 58.5;
+  return (stamp(`2001-${date.slice(5)}`) - Date.UTC(2001, 0, 1)) / DAY;
 }
-
-function aggregateClimate(payload, latitude, longitude, minimumSamples = 20) {
-  const daily = payload.daily;
-  if (!daily || !Array.isArray(daily.time) || CLIMATE_FIELDS.some(key => !Array.isArray(daily[key]) || daily[key].length !== daily.time.length))
-    throw new Error('Incomplete daily climate data');
-  if (CLIMATE_FIELDS.slice(0, 3).some(key => payload.daily_units?.[key] !== '°C')
-    || CLIMATE_FIELDS.slice(3).some(key => payload.daily_units?.[key] !== 'mm')) throw new Error('Unexpected climate units');
-  const buckets = Array.from({ length: 365 }, () => []), seen = new Set();
-  for (let i = 0; i < daily.time.length; i++) {
-    const date = daily.time[i], year = +date.slice(0, 4), index = calendarIndex(date);
-    if (seen.has(date) || year < 1991 || year > 2020 || !Number.isInteger(index) || index < 0 || index >= 365) continue;
-    seen.add(date);
-    const values = CLIMATE_FIELDS.map(key => daily[key][i]);
-    if (!values.every(value => typeof value === 'number' && Number.isFinite(value))
-      || values[0] > values[1] || values[2] < values[0] - 0.2 || values[2] > values[1] + 0.2
-      || values[0] < -100 || values[1] > 70 || values[3] < 0 || values[4] < 0) continue;
-    buckets[index].push(values);
-  }
-  if (buckets.some(bucket => bucket.length < minimumSamples)) throw new Error('Too few valid years for a daily climate normal');
-  // Each compact row: low, high, mean, precipitation, ET0, low σ, high σ, n.
-  const rows = buckets.map(bucket => {
-    const averages = CLIMATE_FIELDS.map((_, j) => mean(bucket.map(row => row[j])));
-    const deviation = j => Math.sqrt(bucket.reduce((sum, row) => sum + (row[j] - averages[j]) ** 2, 0) / Math.max(1, bucket.length - 1));
-    return [...averages, deviation(0), deviation(1)].map(value => +value.toFixed(3)).concat(bucket.length);
-  });
-  return { version: 1, source: 'ERA5', period: CLIMATE_PERIOD, latitude, longitude,
-    gridLatitude: payload.latitude, gridLongitude: payload.longitude, elevation: payload.elevation,
-    timezone: payload.timezone, rows };
+function validRow(row) {
+  return Array.isArray(row) && row.length === 5 && row.every(Number.isFinite)
+    && row[0] >= -100 && row[1] <= 70 && row[0] <= row[1]
+    && row[2] >= row[0] - 0.2 && row[2] <= row[1] + 0.2 && row[3] >= 0 && row[4] >= 0;
 }
-
 function validClimate(profile) {
-  return profile?.version === 1 && profile.source === 'ERA5' && profile.period === CLIMATE_PERIOD
+  return profile?.version === 2 && profile.source === 'ERA5'
     && validCoordinates(profile.latitude, profile.longitude) && typeof profile.timezone === 'string'
-    && Array.isArray(profile.rows) && profile.rows.length === 365
-    && profile.rows.every(row => Array.isArray(row) && row.length === 8 && row.every(Number.isFinite)
-      && row[0] >= -100 && row[1] <= 70 && row[0] <= row[1] && row[3] >= 0 && row[4] >= 0
-      && row[2] >= row[0] - 0.2 && row[2] <= row[1] + 0.2
-      && row[5] >= 0 && row[6] >= 0 && row[7] >= 20 && row[7] <= 30);
+    && isDate(profile.startDate) && isDate(profile.endDate)
+    && Array.isArray(profile.rows) && profile.rows.length >= 1 && profile.rows.length <= 61
+    && profile.rows.length === (stamp(profile.endDate) - stamp(profile.startDate)) / DAY + 1
+    && profile.rows.every(validRow);
 }
-
-function climateOnDate(profile, date) {
-  const index = calendarIndex(date), lo = Math.floor(index), blend = index - lo;
-  const a = profile.rows[lo], b = profile.rows[(lo + 1) % 365];
-  const row = a.map((value, i) => value * (1 - blend) + b[i] * blend);
-  return { low: row[0], high: row[1], mean: row[2], rain: row[3], evapotranspiration: row[4],
-    lowDeviation: row[5], highDeviation: row[6], samples: row[7] };
+function parseClimate(payload, latitude, longitude, window) {
+  const daily = payload.daily;
+  const count = (stamp(window.endDate) - stamp(window.startDate)) / DAY + 1;
+  if (!daily || !Array.isArray(daily.time) || daily.time.length !== count
+    || CLIMATE_FIELDS.some(key => !Array.isArray(daily[key]) || daily[key].length !== count))
+    throw new Error('Incomplete daily weather data');
+  if (CLIMATE_FIELDS.slice(0, 3).some(key => payload.daily_units?.[key] !== '°C')
+    || CLIMATE_FIELDS.slice(3).some(key => payload.daily_units?.[key] !== 'mm')) throw new Error('Unexpected weather units');
+  if (daily.time.some((date, i) => date !== iso(stamp(window.startDate) + i * DAY)))
+    throw new Error('Weather dates do not match the requested window');
+  const profile = { version: 2, source: 'ERA5', latitude, longitude,
+    gridLatitude: payload.latitude, gridLongitude: payload.longitude, elevation: payload.elevation,
+    timezone: payload.timezone, ...window, rows: daily.time.map((_, i) => CLIMATE_FIELDS.map(key => daily[key][i])) };
+  if (!validClimate(profile)) throw new Error('Missing or invalid daily weather values');
+  return profile;
 }
-
-// A deliberately coarse latitude-only fallback, visibly labelled Estimated.
-// It is replaced by the selected coordinate's cached/online ERA5 record. It
-// must never inherit a different location's temperatures or claim observations.
-function estimateClimate(latitude, longitude) {
+function hasClimateDate(profile, date) {
+  return profile?.source === 'ERA5' && isDate(date) && date >= profile.startDate && date <= profile.endDate;
+}
+function estimatedRow(latitude, date) {
   const absolute = Math.abs(latitude), radians = absolute * Math.PI / 180;
-  const average = 28 - 48 * Math.sin(radians) ** 1.5;
-  const amplitude = 2 + 19 * Math.sin(radians);
+  const average = 28 - 48 * Math.sin(radians) ** 1.5, amplitude = 2 + 19 * Math.sin(radians);
   const precipitation = 250 + 2100 * Math.exp(-((absolute / 13) ** 2)) + 650 * Math.exp(-(((absolute - 50) / 15) ** 2));
-  const rows = Array.from({ length: 365 }, (_, day) => {
-    const warm = Math.cos((day - (latitude < 0 ? 20 : 202)) / 365 * Math.PI * 2);
-    const temperature = average + amplitude * warm;
-    return [temperature - 5, temperature + 5, temperature, precipitation / 365,
-      Math.max(0.2, (temperature + 8) * 0.13), 0, 0, 0];
-  });
-  return { version: 1, source: 'estimate', period: null, latitude, longitude, timezone: 'UTC', elevation: 0, rows };
+  const warm = Math.cos((calendarIndex(date) - (latitude < 0 ? 20 : 202)) / 365 * Math.PI * 2);
+  const temperature = average + amplitude * warm;
+  return [temperature - 5, temperature + 5, temperature, precipitation / 365, Math.max(0.2, (temperature + 8) * 0.13)];
 }
-
+function climateOnDate(profile, date) {
+  const actual = hasClimateDate(profile, date);
+  const row = actual ? profile.rows[(stamp(date) - stamp(profile.startDate)) / DAY] : estimatedRow(profile.latitude, date);
+  return { date, source: actual ? 'ERA5' : 'estimate', low: row[0], high: row[1], mean: row[2], rain: row[3], evapotranspiration: row[4] };
+}
+// Procedural annual latitude curve, generated locally; no historical download.
+function estimateClimate(latitude, longitude) {
+  return { source: 'estimate', latitude, longitude, timezone: 'UTC',
+    rows: Array.from({ length: 365 }, (_, i) => estimatedRow(latitude, iso(Date.UTC(2001, 0, 1) + i * DAY))) };
+}
 function climateEcology(profile) {
-  const rows = profile.rows, monthly = Array.from({ length: 12 }, () => []);
+  // A short weather window cannot establish annual climate or land cover.
+  // Calibrate a latitude prior once per location, then retain its species mix
+  // while the date moves. The weather only weakly influences annual wetness.
+  const prior = estimateClimate(profile.latitude, profile.longitude);
+  let temperatureOffset = 0, waterScale = 1;
+  if (profile.source === 'ERA5') {
+    const expected = profile.rows.map((_, i) => estimatedRow(profile.latitude, iso(stamp(profile.startDate) + i * DAY)));
+    temperatureOffset = mean(profile.rows.map((row, i) => row[2] - expected[i][2]));
+    const rainRatio = mean(profile.rows.map(row => row[3])) / Math.max(0.1, mean(expected.map(row => row[3])));
+    waterScale = 0.8 + 0.2 * Math.min(3, rainRatio);
+  }
+  const rows = prior.rows.map(row => [row[0] + temperatureOffset, row[1] + temperatureOffset,
+    row[2] + temperatureOffset, row[3] * waterScale, Math.max(0.2, (row[2] + temperatureOffset + 8) * 0.13)]);
+  const monthly = Array.from({ length: 12 }, () => []);
   rows.forEach((row, i) => monthly[new Date(Date.UTC(2001, 0, 1) + i * DAY).getUTCMonth()].push(row[2]));
   const annualTemperature = mean(rows.map(row => row[2]));
   const coldest = Math.min(...monthly.map(mean)), warmest = Math.max(...monthly.map(mean));
@@ -1683,8 +1720,7 @@ function climateEcology(profile) {
   else if (annualTemperature < 5) vegetation = 'Boreal forest';
   else vegetation = aridity > 1.2 ? 'Wet temperate forest' : 'Temperate woodland';
   return { annualTemperature, precipitation, potentialEvaporation, aridity, coldest, warmest, vegetation,
-    temperature: clamp01((annualTemperature + 15) / 50),
-    moisture: clamp01(0.1 + 0.52 * Math.log1p(aridity) / Math.LN2),
+    temperature: clamp01((annualTemperature + 15) / 50), moisture: clamp01(0.1 + 0.52 * Math.log1p(aridity) / Math.LN2),
     seasonality: 1 - smooth(10, 20, coldest),
     treeCover: smooth(10, 14, warmest) * (0.08 + 0.92 * smooth(0.05, 0.55, aridity)),
     grassCover: smooth(-1, 5, warmest) * smooth(0.03, 0.35, aridity) };
@@ -1708,47 +1744,105 @@ function speciesSuitability(id, ecology) {
   return 1;
 }
 
-function createClimateCache(storage, initial = []) {
-  const key = 'fly-with-me-climate-v1';
-  let entries = initial.filter(validClimate);
+function trimClimate(profile, date, days) {
+  if (profile.rows.length <= validCacheDays(days) * 2 + 1) return profile;
+  const center = Math.max(stamp(profile.startDate), Math.min(stamp(profile.endDate), stamp(date)));
+  const start = Math.max(stamp(profile.startDate), center - validCacheDays(days) * DAY);
+  const end = Math.min(stamp(profile.endDate), center + validCacheDays(days) * DAY);
+  return { ...profile, startDate: iso(start), endDate: iso(end),
+    rows: profile.rows.slice((start - stamp(profile.startDate)) / DAY, (end - stamp(profile.startDate)) / DAY + 1) };
+}
+// When advancing beyond a cached edge, fetch only the missing end of the new
+// window. Keep at most one bounded window for each of eight recent locations.
+function missingClimateWindow(profile, window) {
+  if (!profile || profile.endDate < window.startDate || profile.startDate > window.endDate) return window;
+  if (profile.startDate <= window.startDate && profile.endDate < window.endDate)
+    return { startDate: iso(stamp(profile.endDate) + DAY), endDate: window.endDate };
+  if (profile.endDate >= window.endDate && profile.startDate > window.startDate)
+    return { startDate: window.startDate, endDate: iso(stamp(profile.startDate) - DAY) };
+  return window;
+}
+function mergeClimateWindow(previous, incoming, window) {
+  const rows = [];
+  for (let t = stamp(window.startDate); t <= stamp(window.endDate); t += DAY) {
+    const date = iso(t), profile = hasClimateDate(incoming, date) ? incoming : previous;
+    if (!hasClimateDate(profile, date)) throw new Error('Weather cache has a date gap');
+    rows.push(profile.rows[(t - stamp(profile.startDate)) / DAY]);
+  }
+  const merged = { ...incoming, ...window, rows };
+  if (!validClimate(merged)) throw new Error('Invalid weather cache window');
+  return merged;
+}
+function createClimateCache(storage, initial = [], days = 7) {
+  const key = 'fly-with-me-weather-v2';
+  let entries = initial.filter(validClimate), capacity = validCacheDays(days);
   try {
     const saved = JSON.parse(storage?.getItem(key) ?? 'null');
     if (Array.isArray(saved)) entries = [...entries, ...saved.filter(validClimate)];
+    storage?.removeItem('fly-with-me-climate-v1');
   } catch { /* storage is optional */ }
   const cache = new Map(entries.map(entry => [climateKey(entry.latitude, entry.longitude), entry]));
-  while (cache.size > 8) cache.delete(cache.keys().next().value);
+  // Prefer the bundled opening day over a saved window from another date.
+  for (const entry of initial.filter(validClimate)) {
+    const id = climateKey(entry.latitude, entry.longitude);
+    if (!hasClimateDate(cache.get(id), DEFAULT_DATE)) cache.set(id, entry);
+  }
+  const persist = () => { try { storage?.setItem(key, JSON.stringify([...cache.values()])); } catch { /* flight works without storage */ } };
+  function resize(value, date) {
+    capacity = validCacheDays(value);
+    for (const [id, profile] of cache) cache.set(id, trimClimate(profile, date, capacity));
+    while (cache.size > 8) cache.delete(cache.keys().next().value);
+    persist();
+  }
+  resize(capacity, DEFAULT_DATE);
   return {
-    get(latitude, longitude) { return cache.get(climateKey(latitude, longitude)); },
-    put(profile) {
-      if (!validClimate(profile)) throw new Error('Invalid climate cache record');
-      const id = climateKey(profile.latitude, profile.longitude);
-      cache.delete(id); cache.set(id, profile);
-      while (cache.size > 8) cache.delete(cache.keys().next().value);
-      try { storage?.setItem(key, JSON.stringify([...cache.values()])); } catch { /* a full cache cannot stop flight */ }
+    get(latitude, longitude) {
+      const id = climateKey(latitude, longitude), profile = cache.get(id);
+      if (profile) { cache.delete(id); cache.set(id, profile); }
+      return profile;
     },
+    put(profile, date) {
+      if (!validClimate(profile)) throw new Error('Invalid weather cache record');
+      const id = climateKey(profile.latitude, profile.longitude);
+      cache.delete(id); cache.set(id, trimClimate(profile, date, capacity));
+      while (cache.size > 8) cache.delete(cache.keys().next().value);
+      persist();
+    },
+    resize,
   };
 }
-
-function fetchClimate(latitude, longitude, signal, fetcher = fetch) {
-  return fetcher(climateURL(latitude, longitude), { signal, credentials: 'omit' }).then(async response => {
-    if (!response.ok) throw new Error(response.status === 429 ? 'Climate service is busy; try again later.' : `Climate service unavailable (${response.status}).`);
-    return aggregateClimate(await response.json(), latitude, longitude);
-  });
+async function fetchClimate(latitude, longitude, window, signal, fetcher = fetch) {
+  const response = await fetcher(climateURL(latitude, longitude, window), { signal, credentials: 'omit' });
+  if (!response.ok) {
+    const error = new Error(response.status === 429 ? 'Weather service is busy.' : `Weather service unavailable (${response.status}).`);
+    const retry = response.headers?.get('Retry-After');
+    error.retryAfter = response.status === 429 ? Math.max(60000, Number.isFinite(Number(retry))
+      ? Number(retry) * 1000 : (Date.parse(retry) - Date.now()) || 0) : 15000;
+    throw error;
+  }
+  return parseClimate(await response.json(), latitude, longitude, window);
 }
 
-__exports.CLIMATE_PERIOD = CLIMATE_PERIOD;
+__exports.DEFAULT_DATE = DEFAULT_DATE;
+__exports.CACHE_DAY_OPTIONS = CACHE_DAY_OPTIONS;
 __exports.CLIMATE_FIELDS = CLIMATE_FIELDS;
+__exports.validCacheDays = validCacheDays;
 __exports.climateKey = climateKey;
 __exports.validCoordinates = validCoordinates;
+__exports.weatherWindow = weatherWindow;
 __exports.climateURL = climateURL;
 __exports.calendarIndex = calendarIndex;
-__exports.aggregateClimate = aggregateClimate;
 __exports.validClimate = validClimate;
+__exports.parseClimate = parseClimate;
+__exports.hasClimateDate = hasClimateDate;
 __exports.climateOnDate = climateOnDate;
 __exports.estimateClimate = estimateClimate;
 __exports.climateEcology = climateEcology;
 __exports.geographicClimate = geographicClimate;
 __exports.speciesSuitability = speciesSuitability;
+__exports.trimClimate = trimClimate;
+__exports.missingClimateWindow = missingClimateWindow;
+__exports.mergeClimateWindow = mergeClimateWindow;
 __exports.createClimateCache = createClimateCache;
 __exports.fetchClimate = fetchClimate;
 return __exports;
@@ -1756,18 +1850,17 @@ return __exports;
 __modules["src/climate-default.js"] = (() => {
 const __exports = {};
 
-// Beijing 1991–2020 daily normals, aggregated from Open-Meteo ERA5.
-// Data: CC BY 4.0; https://open-meteo.com/en/docs/historical-weather-api
-// Rows and aggregation are documented in climate.js. Retrieved 2026-09-08.
-const DEFAULT_CLIMATE = {"version":1,"source":"ERA5","period":"1991–2020","latitude":39.9,"longitude":116.4,"gridLatitude":40,"gridLongitude":116.5,"elevation":49,"timezone":"Asia/Shanghai","rows":[[-7.677,2.223,-3.43,0.017,1.111,2.975,3.539,30],[-7.727,2.613,-3.17,0,1.089,2.733,3.744,30],[-7.47,1.573,-3.473,0.46,1.114,2.695,3.994,30],[-8.59,1.033,-4.177,0.223,1.025,3.357,4.509,30],[-8.637,1.323,-4.083,0.347,0.993,4.1,4.376,30],[-7.607,1.503,-3.68,0.303,1.08,3.87,4.024,30],[-7.96,1.47,-3.673,0.183,1.074,3.594,3.528,30],[-7.873,1.11,-3.95,0.183,1.096,3.024,3.603,30],[-8.573,1.617,-4.003,0,1.149,3.031,3.034,30],[-8.513,1.81,-3.863,0,1.123,3.185,3.53,30],[-8.223,1.037,-4.063,0.16,1.073,2.547,3.584,30],[-8.523,1.317,-4.07,0.013,1.117,3.216,3.913,30],[-8.207,1.56,-3.893,0.147,1.153,3.082,3.314,30],[-8.54,0.84,-4.207,0.047,1.086,2.985,3.351,30],[-8.57,0.773,-4.32,0.027,0.993,3.119,3.322,30],[-8.593,0.873,-4.233,0,1.076,3.81,3.704,30],[-8.56,0.89,-4.317,0.073,1.074,2.841,3.58,30],[-9.277,1.247,-4.483,0.023,1.103,3.072,3.479,30],[-8.373,1.963,-3.54,0.007,1.146,3.453,2.814,30],[-7.61,1.467,-3.4,0.06,1.214,3,2.978,30],[-8.347,1.627,-3.743,0.127,1.201,3.121,3.411,30],[-8.597,1.59,-3.867,0.137,1.257,3.338,4.143,30],[-9.107,0.617,-4.717,0.017,1.225,3.444,4.764,30],[-8.927,2.003,-3.947,0.027,1.252,3.753,3.184,30],[-8.76,2.187,-3.65,0.087,1.287,3.892,3.531,30],[-8.477,3.097,-3.19,0.02,1.34,3.148,3.387,30],[-8.177,2.957,-3.013,0,1.36,2.974,3.523,30],[-7.097,3.177,-2.457,0.013,1.41,3.004,3.261,30],[-6.86,3.193,-2.34,0,1.466,2.601,3.247,30],[-7.123,2.95,-2.543,0.033,1.409,2.577,3.436,30],[-6.927,3.213,-2.233,0.023,1.496,2.709,3.214,30],[-6.747,3.137,-2.303,0.003,1.469,3.065,2.852,30],[-7.177,3.26,-2.327,0.103,1.469,3.155,3.194,30],[-7.14,3.62,-2.16,0.11,1.538,3.185,3.711,30],[-6.63,3.61,-2.033,0.003,1.563,2.855,3.534,30],[-6.227,4.09,-1.637,0.16,1.52,1.792,4.648,30],[-6.367,3.747,-1.473,0.25,1.526,2.542,4.728,30],[-6.633,3.723,-1.797,0.22,1.574,3.106,4.765,30],[-6.747,3.7,-1.857,0,1.589,3.109,4.113,30],[-7.013,4.703,-1.593,0,1.675,3.145,3.896,30],[-6.307,4.953,-1.22,0.137,1.694,2.894,4.801,30],[-5.817,5.257,-0.69,0.147,1.698,2.889,4.626,30],[-5.66,5.887,-0.353,0.54,1.612,2.713,4.121,30],[-5.167,6.777,0.277,0.283,1.673,2.558,4.119,30],[-4.627,5.797,0.207,0.61,1.676,2.301,3.962,30],[-5.123,5.337,-0.2,0.213,1.731,2.336,3.536,30],[-4.687,5.763,0.037,0.127,1.784,2.236,3.388,30],[-4.483,6.19,0.29,0.033,1.814,1.895,3.606,30],[-4.56,6.387,0.453,0.087,1.798,1.693,4.174,30],[-4.277,7.68,1.033,0.53,1.917,2.23,4.297,30],[-3.737,6.733,1.08,0.457,1.802,3.09,3.476,30],[-4.113,7.393,1.27,0.43,1.822,2.946,3.874,30],[-3.763,7.06,1.377,0.043,1.998,2.181,3.512,30],[-3.863,7.193,1.177,0.033,1.955,1.864,3.769,30],[-3.62,7.92,1.877,0.05,1.91,2.057,4.391,30],[-2.833,7.83,2.14,0.123,1.895,2.496,3.663,30],[-2.91,8.53,2.483,0.12,2.054,2.257,4.012,30],[-2.75,8.44,2.58,0.14,2.105,2.217,4.561,30],[-3.217,8.69,2.443,0.097,2.178,1.703,4.322,30],[-2.64,9.17,3.01,0.097,2.302,2.71,3.219,30],[-2.03,10.1,3.58,0.163,2.298,2.379,3.966,30],[-2.18,9.937,3.64,0.603,2.294,1.848,4.274,30],[-1.923,9.943,3.833,0.56,2.285,2.151,4.029,30],[-1.783,10.1,4.013,0.08,2.501,2.99,4.837,30],[-2.447,9.743,3.61,0.107,2.517,2.749,3.987,30],[-2.323,10.33,3.773,0.033,2.574,2.109,4.582,30],[-1.553,10.627,4.077,0.193,2.538,2.16,5.06,30],[-1.72,10.83,4.31,0.093,2.616,2.814,4.429,30],[-1.913,11.46,4.657,0.25,2.73,2.72,4.677,30],[-1.43,11.263,4.767,0.243,2.62,2.813,4.576,30],[-1.09,11.663,5.13,0.257,2.671,2.595,4.423,30],[-0.63,12.633,5.97,0.353,2.83,3.064,3.712,30],[0.253,12.417,6.353,0.523,2.762,2.849,3.85,30],[0.327,13.387,6.793,0.407,2.812,2.675,4.192,30],[0.633,13.273,6.773,0.203,2.896,2.849,4.39,30],[0.7,14.327,7.257,0.287,3.012,2.978,5.319,30],[0.817,14.533,7.827,0.55,3.076,2.689,5.453,30],[1.123,13.353,7.37,0.447,2.959,3.196,5,30],[1.75,13.83,7.767,0.697,2.924,2.811,5.052,30],[1.707,13.817,7.703,0.363,3.089,2.948,3.976,30],[1.273,13.63,7.707,0.103,3.137,2.972,3.718,30],[1.953,13.5,7.747,0.313,3.084,3.006,4.274,30],[1.043,15.36,8.2,0.35,3.402,2.916,4.39,30],[1.53,16.653,9.213,0.017,3.589,2.938,4.456,30],[2.287,17.303,9.91,0.273,3.619,3.245,4.131,30],[3.293,17.31,10.367,0,3.74,3.071,4.884,30],[3.667,16.603,10.23,0.367,3.66,3.98,5.274,30],[3.423,16.91,10.307,0.43,3.573,3.946,4.513,30],[4.16,17.09,10.82,0.293,3.577,3.442,5.152,30],[4.52,17.29,11.143,0.253,3.41,3.669,4.902,30],[4.897,17.363,11.21,0.883,3.507,3.55,4.896,30],[4.54,18.607,11.543,0.4,3.812,4.148,4.936,30],[4.357,19.26,12.077,0.29,4.025,3.731,3.783,30],[5.56,20.133,13.09,0.323,4.045,3.676,4.581,30],[6,19.277,12.897,0.87,3.872,2.805,4.252,30],[6.21,18.86,12.697,0.237,3.974,3.405,5.562,30],[6.283,19.44,13.11,0.32,4.21,4.056,4.165,30],[5.783,19.473,13.033,0.45,4.265,3.151,4.7,30],[6.497,19.06,13.103,0.57,3.945,2.96,5.608,30],[7.127,18.777,13.21,0.493,3.954,4.122,4.553,30],[6.79,18.987,13.27,0.623,3.896,3.766,4.044,30],[6.717,20.217,13.75,0.88,4.271,3.423,5.213,30],[7.09,21.89,14.723,0.25,4.44,3.227,4.087,30],[7.427,23.253,15.777,0.007,4.959,3.143,4.428,30],[8.44,23.223,16.327,0.313,4.719,3.114,4.623,30],[9.157,23.167,16.48,0.65,4.784,3.692,4.622,30],[9.417,23.107,16.653,0.37,4.737,2.884,5.115,30],[10.3,23.327,17.01,0.377,4.73,3.67,4.858,30],[10.287,22.083,16.44,0.633,4.173,3.424,5.4,30],[9.83,22.267,16.353,1.123,4.429,3.85,4.716,30],[10.067,22.75,16.647,1.653,4.564,4.014,4.725,30],[9.75,22.557,16.43,0.62,4.828,2.897,4.973,30],[10.07,22.32,16.527,1.42,4.774,3.232,4.257,30],[8.77,23.37,16.643,1.257,5.087,2.687,3.646,30],[9.5,23.497,17.053,0.84,5.279,2.772,4.302,30],[9.703,23.907,17.083,0.887,4.773,2.798,4.802,30],[10.343,24.757,18.153,0.5,5.111,3.64,4.969,30],[11.95,24.683,18.673,1,4.808,2.748,5.054,30],[12.1,25.55,19.087,0.723,4.862,2.389,4.6,30],[12.65,26.877,20.26,0.133,5.714,2.607,4.872,30],[12.64,26.077,19.8,0.71,5.165,2.747,4.556,30],[12.287,26.423,19.667,1.213,5.281,3.527,4.759,30],[12.6,26.787,20.117,2.05,5.42,3.43,4.441,30],[13.01,26.553,20.233,0.67,5.472,3.309,4.144,30],[13.27,25.73,19.947,1.44,5.442,3.122,4.073,30],[12.833,26.387,20.213,0.567,5.308,3.113,4.634,30],[13.077,27.193,20.68,0.343,5.531,2.859,3.833,30],[13.083,26.5,20.46,0.867,5.406,2.909,3.821,30],[12.953,25.12,19.5,0.903,4.757,2.208,4.432,30],[13.133,25.737,20.013,0.91,5.363,2.53,4.733,30],[13.473,26.367,20.21,1.743,4.995,3.279,4.813,30],[13.87,26.54,20.507,1.453,5.112,2.764,5.048,30],[13.86,27.727,21.357,0.35,5.429,3.044,4.246,30],[14.603,27.213,21.327,3.11,5.16,2.915,4.659,30],[14.977,27.51,21.557,0.583,5.151,2.493,3.83,30],[14.757,28.173,22.033,0.887,5.423,2.426,3.904,30],[15.003,29.08,22.42,1.827,5.576,2.822,4.762,30],[15.52,30.017,23.16,0.897,6.039,2.342,4.496,30],[16.043,30.743,23.883,0.473,6.43,3.003,3.89,30],[16.28,30.093,23.71,0.103,6.246,2.681,4.212,30],[15.96,29.843,23.383,1.937,5.691,3.238,4.258,30],[15.917,30.507,23.783,1.93,5.931,2.785,3.882,30],[16.023,31.437,24.377,0.747,6.075,3.184,4.788,30],[17.04,30.477,24.227,1.423,5.856,2.485,4.077,30],[17.067,30.387,24.167,1.303,6.125,2.243,4.538,30],[16.353,30.373,23.967,2.07,5.962,3.07,4.293,30],[16.817,29.91,23.837,2.037,5.969,2.56,4.151,30],[16.817,31.673,24.703,1.05,6.325,2.338,4.528,30],[17.46,31.017,24.703,0.333,6.503,2.672,3.469,30],[17.3,32.043,25.317,0.103,6.571,2.61,3.159,30],[17.587,31.607,25.143,0.987,5.824,2.763,4.195,30],[18.21,31.39,25.22,1.04,5.688,2.703,4.56,30],[18.263,31.33,25.15,1.483,5.896,2.688,4.451,30],[18.39,31.433,25.327,0.857,5.827,2.794,4.63,30],[18.647,31.823,25.61,0.32,5.863,2.826,4.254,30],[18.44,32.413,25.863,0.59,5.886,2.957,4.128,30],[18.993,31.16,25.393,0.993,5.3,3.091,4.584,30],[19.633,31.793,25.74,1.627,5.517,2.753,3.663,30],[19.227,32.693,26.023,3.363,5.888,2.43,4.032,30],[19.317,31.407,25.687,2.44,5.545,2.372,4.823,30],[19.073,31.72,25.637,1.663,5.83,2.513,4.118,30],[18.88,31.89,25.74,0.787,5.867,2.758,3.833,30],[19.537,32.92,26.477,0.463,6.126,2.316,3.565,30],[19.853,32.003,26.11,3.537,5.574,2.085,3.966,30],[19.837,31.983,26.287,1.937,5.639,2.346,4.516,30],[19.993,33.29,26.82,0.837,5.809,2.313,3.456,30],[20.077,31.943,26.217,2.897,5.323,2.029,4.926,30],[20.467,31.57,26.127,4.58,5.3,2.454,4.598,30],[20.767,32.963,26.923,2.137,5.593,2.335,3.908,30],[20.717,33.257,27.233,1.067,5.728,2.391,3.635,30],[21.497,33.427,27.583,1.447,5.449,2.335,3.789,30],[21.71,33.787,27.793,1.557,5.672,2.209,3.634,30],[21.393,32.137,26.717,3.897,5.018,1.872,4.395,30],[20.557,31.89,26.31,5.547,4.993,2.187,4.482,30],[21.07,32.007,26.613,4.187,5.266,2.448,4.213,30],[20.92,31.48,26.37,2.697,4.867,2.308,4.519,30],[21.247,32.743,27.14,1.11,5.225,2.032,4.344,30],[21.677,32.94,27.51,4.317,5.268,1.781,4.023,30],[21.613,32.103,27.017,6.38,4.764,1.995,4.271,30],[21.557,31.783,26.757,5.653,4.709,1.629,4.265,30],[21.773,32.19,26.947,4.88,4.977,1.962,4.345,30],[21.23,32.83,27.33,3.487,5.277,2.3,4.646,30],[21.783,33.637,28.02,1.52,5.558,2.366,3.397,30],[22.163,33.453,28.033,7.07,4.985,1.777,3.168,30],[22.787,33.64,28.113,5.203,4.963,1.675,3.578,30],[22.68,33.59,28.077,4.777,5.103,1.867,3.199,30],[22.37,33.403,28.04,6.133,5.095,1.578,3.591,30],[22.6,32.247,27.62,5.567,5.001,1.868,3.201,30],[22.197,32.303,27.467,2.003,4.685,1.933,3.225,30],[22.09,31.513,26.947,4.177,4.353,1.997,4.239,30],[22.017,32.457,27.23,3.52,4.714,1.693,4.28,30],[22.707,32.337,27.463,2.42,4.518,1.824,4.553,30],[22.89,32.003,27.493,6.26,4.371,1.763,4.676,30],[22.82,32.493,27.687,5.203,4.449,2.103,4.125,30],[22.953,32.427,27.737,4.337,4.465,1.972,3.914,30],[22.613,32.313,27.56,4.11,4.537,1.744,3.763,30],[22.977,32.53,27.807,3.64,4.688,1.588,2.298,30],[23.07,31.107,27.09,7.677,3.895,1.673,3.301,30],[22.917,30.853,26.767,5.49,3.92,1.504,3.58,30],[22.843,31.86,27.313,4.933,4.211,1.952,3.338,30],[23.16,31.917,27.56,11.62,4.233,2.371,3.455,30],[23.313,32.177,27.587,7.087,4.234,1.981,2.936,30],[23.197,31.927,27.637,2.783,4.274,1.864,2.755,30],[22.773,32.033,27.383,6.657,4.168,2.107,3.406,30],[23.017,32.277,27.683,7.673,4.286,2.177,3.79,30],[23.17,32.257,27.89,4.383,4.471,2.159,4.008,30],[23.103,32.2,27.65,2.633,4.414,2.527,3.684,30],[23.443,31.32,27.333,4.067,3.729,2.429,3.302,30],[23.573,32.237,27.783,6.983,4.011,1.947,3.945,30],[23.567,32.247,27.883,5.933,4.276,2.06,3.31,30],[22.933,31.893,27.397,6.58,4.239,2.338,2.973,30],[22.863,31.79,27.313,5.727,4.035,1.651,3.298,30],[23.087,31.273,27.063,5.537,3.745,1.633,3.223,30],[22.737,31.53,27.033,7.593,4.021,1.918,2.752,30],[22.74,31.803,27.173,6.407,3.963,1.62,3.437,30],[22.767,31.493,27.177,3.803,3.929,1.921,3.14,30],[22.86,31.097,26.947,8.977,3.9,1.912,2.495,30],[22.85,31.58,27.217,4.99,4.102,1.703,2.424,30],[22.687,31.203,26.95,4.16,3.824,1.615,2.294,30],[22.487,31.6,26.983,4.51,4.001,1.819,2.66,30],[22.583,31.703,26.913,3.983,3.994,1.653,2.885,30],[22.5,32.29,27.297,2.57,4.231,1.722,2.185,30],[22.8,31.7,27.183,5.16,3.951,1.749,3.04,30],[22.247,31.25,26.647,7.663,3.817,2.062,2.817,30],[22.09,30.857,26.37,6.917,3.764,1.902,2.956,30],[21.973,31.493,26.603,2.487,4.103,2.345,2.661,30],[21.74,31.223,26.49,2.403,4.125,2.015,2.908,30],[21.1,30.773,26.05,4.763,4.063,2.01,3.1,30],[21.47,30.46,25.94,1.883,3.941,2.084,2.708,30],[21.157,30.507,25.807,4.433,3.865,2.134,2.662,30],[20.857,30.23,25.477,4.137,3.871,1.767,3.121,30],[20.567,30.317,25.45,1.593,4.018,2.031,3.118,30],[20.87,30.593,25.557,1.88,4.199,2.496,3.329,30],[20.377,29.94,25.01,1.12,3.886,2.595,3.331,30],[20.447,31.007,25.477,1.693,4.181,2.855,2.582,30],[20.51,31.427,25.733,1.487,4.318,2.061,3.602,30],[20.25,31.107,25.6,4.063,4.226,2.379,3.232,30],[20.287,30.467,25.117,2.89,4.098,1.978,2.438,30],[19.877,30.55,24.943,1.77,3.972,2.038,2.559,30],[19.667,30.347,24.78,3.297,4.055,2.028,2.407,30],[19.387,30.043,24.507,2.087,4.132,2.225,2.611,30],[19.76,29.6,24.41,2.313,3.782,2.236,3.082,30],[19.447,30.123,24.627,2.85,3.868,2.593,2.98,30],[19.467,29.807,24.453,2.737,3.762,2.179,3.257,30],[18.973,29.34,23.973,5.207,3.721,1.756,3.193,30],[18.55,29.22,23.7,1.817,3.887,2.371,3.102,30],[17.697,28.667,23.053,3.93,3.742,2.2,3.301,30],[17.833,29.05,23.153,2.13,3.84,2.341,3.232,30],[17.49,28.967,23.033,1.127,3.999,2.446,3.64,30],[17.84,28.797,23.09,1.373,3.656,2.453,3.753,30],[17.25,28.25,22.513,1.7,3.696,2.581,4.392,30],[16.667,28.7,22.45,1.75,3.94,2.888,3.194,30],[16.717,27.513,21.94,3.163,3.617,2.959,4.365,30],[16.533,27.703,21.72,2.64,3.819,2.898,3.96,30],[16.243,27.673,21.673,1.06,3.731,2.545,3.453,30],[16.16,27.897,21.763,0.71,3.521,2.61,2.99,30],[16.4,27.147,21.533,1.803,3.432,2.601,3.808,30],[15.903,26.997,21.11,2.077,3.551,2.57,3.044,30],[15.65,26.847,20.957,1.293,3.543,2.849,3.16,30],[15.173,26.407,20.583,3.903,3.399,2.625,3.338,30],[14.527,26.533,20.28,1.997,3.477,2.762,3.904,30],[14.297,25.56,19.677,0.593,3.414,2.814,3.328,30],[13.743,25.593,19.387,1.49,3.484,2.721,3.131,30],[13.74,26.143,19.61,1.323,3.42,2.691,3.035,30],[14.063,26.573,20.05,0.86,3.686,3.042,2.177,30],[13.61,25.897,19.67,2.813,3.375,2.581,3.78,30],[13.973,25.587,19.507,1.947,3.251,2.728,3.882,30],[13.947,25.893,19.483,0.937,3.37,3.193,3.146,30],[13.483,25.343,19.013,1.83,3.218,2.824,3.17,30],[13.157,24.453,18.423,1.027,3.442,2.358,3.194,30],[12.913,24.193,18.23,0.53,3.347,2.651,2.811,30],[12.633,24.19,18.107,1.377,3.042,3.033,3.547,30],[12.477,24.14,17.963,1.31,2.949,2.589,3.997,30],[12.727,24.007,18.227,2.793,3.192,2.881,4.255,30],[11.307,23.193,16.97,1.94,3.294,2.764,4.015,30],[10.76,22.897,16.35,2.01,3.279,3.383,4.196,30],[10.17,22.603,15.907,1.363,3.067,2.311,3.742,30],[9.807,22.6,15.743,1.5,3.066,2.866,4.072,30],[10.337,22.12,15.78,1.647,2.841,3.299,3.402,30],[10.253,22.553,16.037,0.96,2.934,3.194,3.419,30],[10.063,21.99,15.757,1.223,2.841,2.68,3.093,30],[10.133,21.417,15.467,1.363,2.654,2.951,3.304,30],[10.237,21.167,15.31,2.067,2.502,2.649,3.249,30],[9.823,20.553,14.94,2.093,2.636,2.654,2.943,30],[8.923,20.877,14.57,0.383,2.624,3.344,3.385,30],[8.87,20.187,14.407,1.493,2.586,3.151,3.338,30],[7.953,20.11,13.68,0.157,2.741,2.704,2.978,30],[8.243,20.293,13.773,0.887,2.65,3.021,3.539,30],[7.957,20.86,14.007,0.217,2.914,2.597,3.093,30],[7.737,20.413,13.64,1.24,2.853,2.284,3.317,30],[7.087,19,12.64,0.757,2.502,2.356,4.065,30],[7.093,19.977,12.967,0.27,2.544,2.763,3.824,30],[7.687,19.497,13.093,0.483,2.382,2.89,4.112,30],[7.357,18.223,12.49,1.413,2.383,2.518,3.664,30],[6.873,17.97,12.023,1.413,2.27,2.499,3.811,30],[6.01,17.857,11.603,0.093,2.431,2.662,3.097,30],[5.653,17.74,11.327,0.843,2.304,2.252,3.474,30],[5.343,16.65,10.767,1.587,2.145,2.807,3.667,30],[5.267,16.65,10.483,0.08,2.406,3.447,3.775,30],[5.307,15.907,10.183,1.54,2.106,3.416,3.203,30],[4,16.33,9.763,0.617,2.409,2.612,2.904,30],[3.453,16.27,9.37,0.043,2.39,2.619,3.189,30],[3.487,15.587,9.053,0.07,2.142,2.308,3.106,30],[3.827,15.623,9.21,0.58,2.197,3.389,4.313,30],[2.743,15.437,8.453,0.253,2.084,3.483,3.743,30],[2.44,15.947,8.737,0.163,2.193,3.016,3.799,30],[2.813,15.8,8.707,1.21,2.068,2.861,3.327,30],[2.727,14.717,8.133,2.167,1.727,2.939,3.575,30],[2.933,15.14,8.487,0.287,1.844,2.646,3.47,30],[2.827,13.74,7.93,0.917,1.886,2.613,4.111,30],[1.68,12.697,6.8,0.773,1.989,2.528,4.099,30],[1,12.687,6.417,0.093,1.768,2.296,4.442,30],[0.863,12.45,6,0.363,1.608,2.866,3.99,30],[0.767,11.807,6.01,0.827,1.635,2.743,3.947,30],[0.863,11.967,6.033,0.863,1.683,3.367,3.615,30],[0.477,12.057,5.827,0.23,1.689,3.073,4.025,30],[-0.01,10.767,5.13,0.527,1.696,3.464,3.511,30],[-1.067,10.48,4.243,0.417,1.527,2.878,3.213,30],[-1.403,9.847,3.68,0.69,1.558,2.973,4.182,30],[-1.667,9,3.173,0.3,1.452,2.618,4.065,30],[-2.03,8.977,2.997,0.393,1.458,3.573,3.568,30],[-2.273,8.42,2.537,0.78,1.309,3.758,4.417,30],[-2.15,7.923,2.433,0.443,1.32,2.8,3.98,30],[-2.737,8.88,2.11,0.657,1.329,2.181,4.089,30],[-3.01,7.973,1.707,0.883,1.242,1.972,4.627,30],[-3.24,7.56,1.553,0.397,1.258,2.125,4.455,30],[-2.873,7.183,1.497,0.073,1.228,3.019,4.093,30],[-3.387,7.2,1.51,0.18,1.331,2.953,4.242,30],[-3.833,6.273,0.687,0.09,1.273,2.685,4.225,30],[-4.08,5.77,0.267,0.17,1.279,2.005,3.731,30],[-4.413,5.457,-0.107,0,1.272,2.046,3.953,30],[-4.407,6.013,-0.003,0,1.255,1.956,3.332,30],[-4.233,6.363,0.287,0.007,1.145,1.66,3.068,30],[-4.25,5.737,-0.013,0.253,1.119,1.901,3.493,30],[-5.093,4.787,-0.597,0.01,1.15,1.932,3.547,30],[-5.167,4.3,-0.993,0.017,1.125,2.32,3.121,30],[-4.853,4.313,-0.833,0.147,1.207,2.304,3.077,30],[-5.01,4.617,-0.893,0.007,1.263,1.953,3.519,30],[-5.543,3.86,-1.313,0.163,1.183,2.194,3.189,30],[-4.92,3.7,-1.177,0.283,1.127,2.477,3.196,30],[-5.79,3.783,-1.597,0.15,1.098,2.103,3.443,30],[-5.887,3.593,-1.823,0.02,1.065,3.075,3.873,30],[-5.57,3.667,-1.577,0.15,1.032,2.885,3.445,30],[-5.63,3.633,-1.503,0.387,1.109,2.295,3.393,30],[-5.787,3.24,-1.967,0.023,1.121,1.562,2.95,30],[-6.137,3.05,-2.19,0.1,1.064,2.169,2.77,30],[-6.237,2.803,-2.387,0.053,1.061,2.018,3.075,30],[-6.453,3.137,-2.273,0.28,1.099,2.305,3.318,30],[-6.21,2.73,-2.38,0.11,1.087,2.434,3.435,30],[-6.463,2.613,-2.427,0.227,1.127,2.329,3.227,30],[-6.73,2.877,-2.497,0.007,1.119,2.216,3.249,30],[-6.81,2.86,-2.683,0.14,1.07,2.252,3.733,30],[-6.687,2.96,-2.477,0.36,1.073,1.958,4.005,30],[-6.7,2.7,-2.607,0.123,1.046,2.181,3.677,30],[-6.973,3.1,-2.717,0.047,1.042,2.637,3.626,30],[-6.127,3.403,-1.953,0.153,1.117,2.801,3.567,30],[-6.577,3.37,-2.343,0.09,1.141,2.291,3.908,30],[-6.767,2.747,-2.537,0.017,1.119,3.16,4.407,30],[-7,2.15,-3.09,0,1.041,2.653,3.649,30],[-7.353,1.69,-3.37,0.01,0.982,2.795,3.369,30],[-7.25,2.033,-3.33,0.003,1.016,2.56,3.807,30],[-7.107,1.66,-3.287,0.043,1.029,2.624,2.954,30],[-7.15,1.753,-3.3,0,1.081,2.871,3.567,30],[-7.173,1.623,-3.197,0.113,1.163,3.132,3.797,30],[-7.61,1.67,-3.633,0.183,1.1,3.344,3.453,30]]};
+// Beijing daily ERA5 weather, 2004-08-14 to 2004-08-28. Retrieved 2026-09-08.
+// Open-Meteo / Copernicus ERA5, CC BY 4.0. See DATA-SOURCES.md.
+const DEFAULT_CLIMATE = {"version":2,"source":"ERA5","latitude":39.9,"longitude":116.4,"gridLatitude":40,"gridLongitude":116.5,"elevation":49,"timezone":"Asia/Shanghai","startDate":"2004-08-14","endDate":"2004-08-28","rows":[[19.4,29.3,23.7,0.3,4.18],[19.9,23.3,21.5,0,1.55],[18.8,25.6,22.3,0,2.24],[17.6,30,23.9,0,4.45],[19.1,32.6,26.3,0,4.89],[20.1,33,26.8,0,4.96],[20.2,32.1,26.5,0,4.76],[21.3,27.8,24.1,0.1,3.37],[20.2,26.9,23.5,0.1,3.6],[20.7,30.2,25.3,0,4.06],[20.6,30.6,25.7,0,4.01],[20.9,24.9,23.1,81.8,1.56],[21.2,27.9,24.2,0,2.77],[21.1,27.4,23.2,23.3,2.22],[17.5,28.6,23.4,1.4,5.15]]};
 
 __exports.DEFAULT_CLIMATE = DEFAULT_CLIMATE;
 return __exports;
 })();
 __modules["src/geography.js"] = (() => {
 const __exports = {};
-const { validTimeZone } = __modules["src/astronomy.js"];
-const { climateEcology, climateKey, createClimateCache, estimateClimate, fetchClimate, validCoordinates } = __modules["src/climate.js"];
+const { validDate, validTimeZone } = __modules["src/astronomy.js"];
+const { climateEcology, climateKey, createClimateCache, DEFAULT_DATE, estimateClimate, fetchClimate, hasClimateDate, mergeClimateWindow, missingClimateWindow, validCacheDays, validCoordinates, weatherWindow } = __modules["src/climate.js"];
 const { DEFAULT_CLIMATE } = __modules["src/climate-default.js"];
 
 
@@ -1782,60 +1875,114 @@ const LOCATION_PRESETS = [
   { name: 'Tromsø', latitude: 69.65, longitude: 18.96, timezone: 'Europe/Oslo' },
 ];
 
-function createGeography(stored = {}, storage, fetcher = fetch) {
-  const cache = createClimateCache(storage, [DEFAULT_CLIMATE]);
-  let timer, timeout, controller, request = 0;
+function createGeography(stored = {}, storage, fetcher = fetch, timing = {}) {
+  const now = timing.now ?? Date.now, interval = timing.interval ?? 5000, debounce = timing.debounce ?? 800;
+  const cacheDays = validCacheDays(stored.cacheDays);
+  const cache = createClimateCache(storage, [DEFAULT_CLIMATE], cacheDays);
+  let timer, timeout, controller, request = 0, disposed = false, calibrated = false, lastStarted = -Infinity;
   const initial = validCoordinates(stored.latitude, stored.longitude) ? stored : LOCATION_PRESETS[0];
-  const state = { latitude: initial.latitude, longitude: initial.longitude, profile: null, ecology: null,
-    timezone: 'UTC', status: '', loading: false, onChange: () => {} };
-  function selectProfile(profile, timezone) {
-    state.profile = profile; state.ecology = climateEcology(profile);
-    state.timezone = validTimeZone(timezone) ?? 'UTC';
+  const state = { latitude: initial.latitude, longitude: initial.longitude, date: DEFAULT_DATE, cacheDays,
+    profile: null, ecology: null, timezone: validTimeZone(initial.timezone) ?? 'UTC',
+    status: '', loading: false, retryAt: 0, onChange: () => {} };
+  function knownZone() {
+    return LOCATION_PRESETS.find(p => climateKey(p.latitude, p.longitude) === climateKey(state.latitude, state.longitude))?.timezone;
   }
-  function knownZone(latitude, longitude) {
-    return LOCATION_PRESETS.find(p => climateKey(p.latitude, p.longitude) === climateKey(latitude, longitude))?.timezone;
+  function selectWeather(resetEcology = false) {
+    const cached = cache.get(state.latitude, state.longitude);
+    state.profile = cached ?? estimateClimate(state.latitude, state.longitude);
+    state.timezone = validTimeZone(cached?.timezone) ?? knownZone() ?? (resetEcology ? 'UTC' : state.timezone);
+    const actual = hasClimateDate(state.profile, state.date);
+    const climateChanged = resetEcology || (!calibrated && actual) || !state.ecology;
+    if (climateChanged) {
+      state.ecology = climateEcology(actual ? state.profile : estimateClimate(state.latitude, state.longitude));
+      calibrated = actual;
+    }
+    state.status = actual ? `ERA5 · ${state.date} · cached daily weather` : `Estimated · no cached weather for ${state.date}`;
+    return climateChanged;
   }
   function cancel() {
-    request++; clearTimeout(timer); clearTimeout(timeout); controller?.abort(); controller = null;
+    request++; clearTimeout(timer); timer = null; clearTimeout(timeout); controller?.abort(); controller = null; state.loading = false;
   }
-  function notify(climateChanged = false) { state.onChange({ climateChanged }); }
-  function load(delay = 800) {
-    cancel();
-    if (state.profile.source === 'ERA5') return;
-    const token = request, latitude = state.latitude, longitude = state.longitude;
-    state.loading = true; state.status = 'Loading 1991–2020 climate…'; notify();
+  function notify(climateChanged = false, weatherChanged = false) { state.onChange({ climateChanged, weatherChanged }); }
+  function load(delay = debounce) {
+    if (disposed) return;
+    if (hasClimateDate(state.profile, state.date)) {
+      clearTimeout(timer); timer = null;
+      state.loading = !!controller;
+      return;
+    }
+    const window = weatherWindow(state.date, state.cacheDays, now());
+    if (!window) {
+      clearTimeout(timer); timer = null; state.loading = !!controller;
+      state.status = 'Estimated · ERA5 covers 1940 through about five days before today.'; notify(); return;
+    }
+    if (now() < state.retryAt) {
+      state.status = `Estimated · weather requests paused; retry after ${new Date(state.retryAt).toLocaleTimeString()}.`;
+      notify(); return;
+    }
+    // Keep an in-flight request when only the date changes: aborting does not
+    // refund provider quota. Read the latest date when the queued request starts.
+    if (controller || timer) return;
+    state.loading = true; state.status = `Estimated · loading weather near ${state.date}…`; notify();
+    const token = request;
     timer = setTimeout(async () => {
-      controller = new AbortController();
-      timeout = setTimeout(() => controller?.abort(), 45000);
+      timer = null;
+      const target = weatherWindow(state.date, state.cacheDays, now());
+      if (!target || disposed || token !== request) { state.loading = false; return; }
+      const latitude = state.latitude, longitude = state.longitude;
+      const previous = cache.get(latitude, longitude);
+      const missing = missingClimateWindow(previous, target);
+      controller = new AbortController(); const signal = controller.signal;
+      timeout = setTimeout(() => controller?.abort(), 30000);
+      lastStarted = now();
+      let failed = false;
       try {
-        const profile = await fetchClimate(latitude, longitude, controller.signal, fetcher);
-        if (token !== request) return;
-        cache.put(profile); selectProfile(profile, profile.timezone);
-        state.status = 'ERA5 · 1991–2020 daily normals'; state.loading = false; notify(true);
+        const incoming = await fetchClimate(latitude, longitude, missing, signal, fetcher);
+        if (disposed || token !== request) return;
+        const profile = mergeClimateWindow(previous, incoming, target);
+        // Returning to a cached day while a different window loads must not
+        // evict the day currently on screen and trigger another download.
+        if (!hasClimateDate(previous, state.date) || hasClimateDate(profile, state.date)) cache.put(profile, state.date);
+        const climateChanged = selectWeather();
+        state.loading = false; state.retryAt = 0; notify(climateChanged, true);
       } catch (error) {
-        if (token !== request) return;
-        state.loading = false;
-        state.status = error.name === 'AbortError' ? 'Estimated · climate request timed out.'
-          : `Estimated · ${error instanceof TypeError ? 'Offline or climate service unavailable.' : error.message}`;
+        if (disposed || token !== request) return;
+        failed = true; state.loading = false;
+        state.retryAt = now() + Math.max(15000, error.retryAfter ?? 15000);
+        const reason = error.name === 'AbortError' ? 'Weather request timed out.'
+          : error instanceof TypeError ? 'Offline or weather service unavailable.' : error.message;
+        state.status = hasClimateDate(state.profile, state.date) ? `ERA5 · ${state.date} · cached daily weather`
+          : `Estimated · ${reason} Retry after ${new Date(state.retryAt).toLocaleTimeString()}.`;
         notify();
-      } finally { if (token === request) { clearTimeout(timeout); controller = null; } }
-    }, delay);
+      } finally {
+        if (token === request) {
+          clearTimeout(timeout); controller = null; state.loading = false;
+          if (!failed && !disposed && !hasClimateDate(state.profile, state.date)) load();
+        }
+      }
+    }, Math.max(delay, lastStarted + interval - now(), 0));
+  }
+  function setDate(date) {
+    if (!validDate(date) || date === state.date || disposed) return;
+    state.date = date;
+    const climateChanged = selectWeather();
+    if (climateChanged) notify(true);
+    load();
+  }
+  function setCacheDays(days) {
+    if (disposed) return;
+    state.cacheDays = validCacheDays(days);
+    cancel(); cache.resize(state.cacheDays, state.date); const climateChanged = selectWeather(); notify(climateChanged, true); load();
   }
   function setLocation(latitude, longitude) {
-    if (!validCoordinates(latitude, longitude)) return false;
-    cancel();
-    state.latitude = latitude; state.longitude = longitude;
-    const cached = cache.get(latitude, longitude);
-    selectProfile(cached ?? estimateClimate(latitude, longitude), cached?.timezone ?? knownZone(latitude, longitude));
-    state.loading = false;
-    state.status = cached ? 'ERA5 · 1991–2020 daily normals · offline copy' : 'Estimated · no cached climate at this location';
-    notify(true); load(); return true;
+    if (!validCoordinates(latitude, longitude) || disposed) return false;
+    if (latitude === state.latitude && longitude === state.longitude) return true;
+    cancel(); state.latitude = latitude; state.longitude = longitude;
+    const climateChanged = selectWeather(true);
+    notify(climateChanged, true); load(); return true;
   }
-  const cached = cache.get(initial.latitude, initial.longitude);
-  selectProfile(cached ?? estimateClimate(initial.latitude, initial.longitude), cached?.timezone
-    ?? knownZone(initial.latitude, initial.longitude) ?? validTimeZone(initial.timezone));
-  state.status = cached ? 'ERA5 · 1991–2020 daily normals · offline copy' : 'Estimated · no cached climate at this location';
-  return Object.assign(state, { setLocation, load, dispose: cancel });
+  selectWeather();
+  return Object.assign(state, { setLocation, setDate, setCacheDays, load, dispose() { disposed = true; cancel(); } });
 }
 
 __exports.LOCATION_PRESETS = LOCATION_PRESETS;
@@ -1902,6 +2049,12 @@ function createCycleControls({ read, change, commit }) {
       applyLocation({ latitude: +latitude.value, longitude: +longitude.value });
   });
   document.getElementById('retryClimate').addEventListener('click', () => change('retryClimate'));
+  for (const button of panel.querySelectorAll('[data-year-step]')) {
+    button.addEventListener('click', () => { change('yearStep', Number(button.dataset.yearStep)); sync(true); commit(); });
+  }
+  document.getElementById('weatherCacheDays').addEventListener('change', event => {
+    change('weatherCacheDays', Number(event.target.value)); sync(true); commit();
+  });
   date.addEventListener('change', () => { if (date.validity.valid) { change('date', date.value); sync(true); commit(); } });
   document.getElementById('timezoneMode').addEventListener('change', event => { change('timezoneMode', event.target.value); sync(true); commit(); });
   for (const button of panel.querySelectorAll('[data-time-preset]')) {
@@ -1938,6 +2091,13 @@ function createCycleControls({ read, change, commit }) {
     text('vegetationValue', values.vegetation);
     text('climateVariation', values.variation);
     text('hemisphereValue', values.hemisphere);
+    text('cacheRange', values.cacheRange);
+    text('calendarYearValue', values.date.slice(0, 4));
+    document.getElementById('weatherCacheDays').value = String(values.weatherCacheDays);
+    for (const button of panel.querySelectorAll('[data-year-step]')) {
+      button.disabled = Number(values.date.slice(0, 4)) + Number(button.dataset.yearStep) < 1901
+        || Number(values.date.slice(0, 4)) + Number(button.dataset.yearStep) > 2099;
+    }
     document.getElementById('retryClimate').hidden = !values.canRetryClimate;
     for (const button of panel.querySelectorAll('[data-time-preset]')) {
       button.disabled = values.timePresets[button.dataset.timePreset] === null;
@@ -2009,7 +2169,7 @@ function enableOffline() {
   if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
   navigator.serviceWorker.addEventListener('message', event => {
     if (event.data?.type === 'flight-cached') status.textContent = event.data.ready
-      ? 'Offline copy ready. New climate locations still need a connection.'
+      ? 'Offline copy ready. Uncached weather dates and locations still need a connection.'
       : 'Map included offline; some flight files still need a connection.';
   });
   navigator.serviceWorker.register(new URL('./offline-worker.js', location.href)).then(async registration => {
@@ -3385,8 +3545,8 @@ const { createMilkyWay } = __modules["src/milky-way.js"];
 const { DAY_SECONDS, YEAR_SECONDS, advancePhase, formatHour, validCycleSpeed, wrapPhase, legacyHourForPhase } = __modules["src/cycles.js"];
 const { createSeasonAppearance } = __modules["src/seasons.js"];
 const { createCycleControls } = __modules["src/cycle-controls.js"];
-const { apparentDirection, civilTime, dateForSeason, horizonCrossings, horizontalDirection, hourAtPhase, phaseAtHour, seasonForDate, solarDay, solarPosition, validDate } = __modules["src/astronomy.js"];
-const { climateOnDate, geographicClimate, speciesSuitability, validCoordinates } = __modules["src/climate.js"];
+const { apparentDirection, civilTime, dateForSeason, horizonCrossings, horizontalDirection, hourAtPhase, phaseAtHour, seasonForDate, shiftCalendarYear, solarDay, solarPosition, validDate } = __modules["src/astronomy.js"];
+const { climateOnDate, DEFAULT_DATE, geographicClimate, speciesSuitability, validCoordinates, weatherWindow } = __modules["src/climate.js"];
 const { createGeography } = __modules["src/geography.js"];
 const { enableOffline } = __modules["src/offline.js"];
 const { SWATCH, LEAVES, swatchColor, colorProblem, validateLibrary, validateBaked, BUDGET } = __modules["library/contract.js"];
@@ -3486,17 +3646,18 @@ let seed = parseInt(params.get('seed'), 10);
 if (!Number.isFinite(seed))
   seed = finite(storedFlight?.seed, 0, 0xffffffff) ?? (Math.random() * 0xffffffff) >>> 0;
 seed = seed >>> 0;
-if (storedFlight?.seed === seed) seasonPhase = finite(storedFlight.seasonPhase, 0, 1) ?? 0.25;
-let calendarYear = finite(storedFlight?.seed === seed ? storedFlight.calendarYear : null, 1901, 2099)
-  ?? finite(storedSettings.calendarYear, 1901, 2099) ?? new Date().getUTCFullYear();
-calendarYear = Math.floor(calendarYear);
+// Each opening starts on the requested date, including a resumed flight.
+// Flight position, local hour and independent rate preferences still resume.
+let calendarYear = +DEFAULT_DATE.slice(0, 4);
 let timezoneMode = storedSettings.timezoneMode === 'utc' ? 'utc' : 'auto';
 let climateStorage;
 try { climateStorage = localStorage; } catch { /* private browsing may deny storage */ }
 const urlLatitude = params.has('lat') ? Number(params.get('lat')) : NaN;
 const urlLongitude = params.has('lon') ? Number(params.get('lon')) : NaN;
 const geography = createGeography(validCoordinates(urlLatitude, urlLongitude)
-  ? { latitude: urlLatitude, longitude: urlLongitude } : storedSettings.geography, climateStorage);
+  ? { latitude: urlLatitude, longitude: urlLongitude, cacheDays: storedSettings.weatherCacheDays }
+  : { ...storedSettings.geography, cacheDays: storedSettings.weatherCacheDays }, climateStorage);
+seasonPhase = seasonForDate(DEFAULT_DATE, geography.latitude);
 let celestialDay = solarDay(dateForSeason(seasonPhase, calendarYear, geography.latitude), geography.latitude, geography.longitude,
   timezoneMode === 'utc' ? 'UTC' : geography.timezone);
 const geographicBase = uniform(new THREE.Vector2(geography.ecology.temperature, geography.ecology.moisture));
@@ -5593,6 +5754,7 @@ function refreshSkyCalendar(preserveHour = true) {
   celestialDay.key = key;
   if (hour !== null && Math.abs(hourAtPhase(celestialDay, dayPhase) - hour) > 1e-8) dayPhase = phaseAtHour(celestialDay, hour);
   rebuildSkyEvents();
+  geography.setDate(celestialDay.date);
 }
 const isNight = phase => solarPosition(celestialDay.start + phase * (celestialDay.end - celestialDay.start), geography.latitude, geography.longitude).altitude < -0.833;
 const SUNRISE_AZIMUTH = (() => {
@@ -6449,7 +6611,7 @@ function saveSettings() {
     camera: { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist },
     daySpeed,
     seasonSpeed,
-    calendarYear,
+    weatherCacheDays: geography.cacheDays,
     timezoneMode,
     geography: { latitude: geography.latitude, longitude: geography.longitude, timezone: geography.timezone },
   });
@@ -6611,8 +6773,8 @@ function updateAtmosphere(dt) {
 }
 
 // ---------------------------------------------------------------------------
-// Resume. A remembered flight in this world continues from its exact moment:
-// place, course, time of day and the schedules that hang off the clock.
+// Resume flight position, local hour and schedules. The calendar always
+// opens on DEFAULT_DATE independently of those saved flight controls.
 // ---------------------------------------------------------------------------
 function restoreFlight(stored) {
   if (!stored || stored.seed !== seed) return false;
@@ -6635,9 +6797,11 @@ function restoreFlight(stored) {
     pitch: n('pitch', -1, 1) ?? 0,
     yawRate: n('yawRate', -1, 1) ?? 0,
   });
-  seasonPhase = (n('seasonPhase', 0, 1) ?? 0.25) % 1;
+  seasonPhase = seasonForDate(DEFAULT_DATE, geography.latitude);
   refreshSkyCalendar(false);
-  dayPhase = stored.clockVersion === 2 ? phase % 1 : phaseAtHour(celestialDay, legacyHourForPhase(phase));
+  const savedHour = n('localHour', 0, 24);
+  dayPhase = savedHour !== null ? phaseAtHour(celestialDay, savedHour)
+    : stored.clockVersion === 2 ? phase % 1 : phaseAtHour(celestialDay, legacyHourForPhase(phase));
   cloudSchedule = n('cloudSchedule', 0, 1) ?? 0;
   cloudOrigin = n('cloudOrigin') ?? -150;
   const low = stored.low ?? {},
@@ -6675,6 +6839,7 @@ function flightMemory() {
     seasonPhase,
     calendarYear,
     clockVersion: 2,
+    localHour: hourAtPhase(celestialDay, dayPhase),
     cloudSchedule,
     cloudOrigin,
     low: { next: flight.lowNext, until: flight.lowUntil, on: flight.low, amount: flight.lowAmount },
@@ -6731,13 +6896,17 @@ function worldControlsState() {
     timezone: `${celestialDay.zone} · UTC${offset}${timezoneMode === 'auto' && geography.profile.source !== 'ERA5' && geography.timezone === 'UTC' ? ' · local timezone unavailable' : ''}`,
     sunrise: eventTime(celestialDay.sunrise), sunset: eventTime(celestialDay.sunset),
     daylight: `${Math.floor(dayMinutes / 60)}h ${dayMinutes % 60}m`, timePresets: timePresets(),
-    climateStatus: geography.status, canRetryClimate: !geography.loading && geography.profile.source !== 'ERA5',
+    climateStatus: geography.status, weatherCacheDays: geography.cacheDays,
+    cacheRange: geography.profile.source === 'ERA5' ? `${geography.profile.startDate} – ${geography.profile.endDate}` : 'No saved dates here',
+    canRetryClimate: !geography.loading && weather.source !== 'ERA5'
+      && !!weatherWindow(celestialDay.date, geography.cacheDays),
     temperature: `${weather.low.toFixed(1)} / ${weather.high.toFixed(1)} °C`,
-    precipitation: `${weather.rain.toFixed(1)} mm/day · ${Math.round(ecology.precipitation)} mm/year`,
+    precipitation: `${weather.rain.toFixed(1)} mm · ${celestialDay.date}`,
     vegetation: ecology.vegetation,
-    variation: weather.samples ? `Across ${Math.round(weather.samples)} years: low σ ${weather.lowDeviation.toFixed(1)} °C · high σ ${weather.highDeviation.toFixed(1)} °C. These are climate averages, not today's weather.`
-      : 'Latitude-based estimate; local rain, terrain and coast effects need climate data.',
-    hemisphere: `${geography.latitude < 0 ? 'Southern' : 'Northern'} hemisphere${Math.abs(geography.latitude) < 23.44 ? ' · tropical wet/dry patterns come from the climate data' : ''}` };
+    variation: weather.source === 'ERA5'
+      ? `Daily reanalysis for ${celestialDay.date}, in the location's local timezone. Vegetation remains an estimate; a short weather window cannot establish annual climate.`
+      : `Estimated weather for ${celestialDay.date}; this date is not cached. Vegetation uses a coarse geographic estimate.`,
+    hemisphere: `${geography.latitude < 0 ? 'Southern' : 'Northern'} hemisphere · slider stays in ${calendarYear}` };
 }
 function previewWorldChange() {
   updateAtmosphere(0);
@@ -6752,6 +6921,13 @@ function changeWorldControl(field, value) {
   if (field === 'location') {
     if (value && validCoordinates(value.latitude, value.longitude)) geography.setLocation(value.latitude, value.longitude);
     return;
+  }
+  if (field === 'yearStep') {
+    if (value !== -1 && value !== 1) return;
+    value = shiftCalendarYear(celestialDay.date, value); field = 'date';
+  }
+  if (field === 'weatherCacheDays') {
+    geography.setCacheDays(value); saveSettings(); return;
   }
   if (field === 'date') {
     if (!validDate(value)) return;
@@ -6775,7 +6951,7 @@ function changeWorldControl(field, value) {
 }
 const cycleControls = createCycleControls({ read: worldControlsState, change: changeWorldControl, commit: saveFlight });
 let southernHemisphere = geography.latitude < 0;
-geography.onChange = ({ climateChanged }) => {
+geography.onChange = ({ climateChanged, weatherChanged }) => {
   if (disposed) return;
   if (southernHemisphere !== (geography.latitude < 0)) {
     seasonPhase = seasonForDate(celestialDay.date, geography.latitude);
@@ -6794,6 +6970,7 @@ geography.onChange = ({ climateChanged }) => {
     document.getElementById('shareLink').href = shareUrl.toString();
     saveSettings(); saveFlight();
   }
+  if (weatherChanged && !climateChanged) previewWorldChange();
   cycleControls.sync(true);
 };
 cycleControls.sync(true);
@@ -7180,7 +7357,7 @@ window.__fly = {
   get nightShare() { return 1 - celestialDay.daylight * 3600000 / (celestialDay.end - celestialDay.start); },
   get astronomy() { return { ...celestialDay, latitude: geography.latitude, longitude: geography.longitude }; },
   get environment() { return worldControlsState(); },
-  get climate() { return { source: geography.profile.source, ecology: geography.ecology, daily: climateOnDate(geography.profile, celestialDay.date) }; },
+  get climate() { const daily = climateOnDate(geography.profile, celestialDay.date); return { source: daily.source, ecology: geography.ecology, daily }; },
   setEnvironment: changeWorldControl,
   deck: DECK_Y,
   get cloudCycle() {
