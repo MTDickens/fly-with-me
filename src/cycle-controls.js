@@ -52,6 +52,12 @@ export function createCycleControls({ read, change, commit }) {
       applyLocation({ latitude: +latitude.value, longitude: +longitude.value });
   });
   document.getElementById('retryClimate').addEventListener('click', () => change('retryClimate'));
+  for (const button of panel.querySelectorAll('[data-year-step]')) {
+    button.addEventListener('click', () => { change('yearStep', Number(button.dataset.yearStep)); sync(true); commit(); });
+  }
+  document.getElementById('weatherCacheDays').addEventListener('change', event => {
+    change('weatherCacheDays', Number(event.target.value)); sync(true); commit();
+  });
   date.addEventListener('change', () => { if (date.validity.valid) { change('date', date.value); sync(true); commit(); } });
   document.getElementById('timezoneMode').addEventListener('change', event => { change('timezoneMode', event.target.value); sync(true); commit(); });
   for (const button of panel.querySelectorAll('[data-time-preset]')) {
@@ -88,6 +94,13 @@ export function createCycleControls({ read, change, commit }) {
     text('vegetationValue', values.vegetation);
     text('climateVariation', values.variation);
     text('hemisphereValue', values.hemisphere);
+    text('cacheRange', values.cacheRange);
+    text('calendarYearValue', values.date.slice(0, 4));
+    document.getElementById('weatherCacheDays').value = String(values.weatherCacheDays);
+    for (const button of panel.querySelectorAll('[data-year-step]')) {
+      button.disabled = Number(values.date.slice(0, 4)) + Number(button.dataset.yearStep) < 1901
+        || Number(values.date.slice(0, 4)) + Number(button.dataset.yearStep) > 2099;
+    }
     document.getElementById('retryClimate').hidden = !values.canRetryClimate;
     for (const button of panel.querySelectorAll('[data-time-preset]')) {
       button.disabled = values.timePresets[button.dataset.timePreset] === null;

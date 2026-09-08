@@ -73,10 +73,11 @@ After geography, map, climate or offline changes, run:
 
 ```bash
 node tests/geography-checks.mjs
+node tests/weather-checks.mjs
 node tests/offline-checks.mjs
 ```
 
-The geography checks compare sunrise/set with independent Astronomy Engine fixtures and cover poles, grazing crossings, DST, leap dates, hemisphere/date round trips, climate statistics, cache validation and out-of-order location requests. The offline checks verify subpath reloads, CDN modules, full-storage behavior and climate-request isolation. Also exercise map clicks, pan/zoom, touch and numeric inputs in the browser; check an offline reload and a rapid succession of locations. Solar times use a standard unobstructed horizon; they are not predictions of local terrain shadows or atmospheric conditions.
+The geography checks compare sunrise/set with independent Astronomy Engine fixtures and cover poles, grazing crossings, DST, leap dates, hemisphere/date round trips and coarse vegetation estimation. Weather checks cover bounded requests, exact historical/leap dates, cache resizing and overlap, year jumps, scrubbing, out-of-order responses and quota cooldown. The offline checks verify subpath reloads, CDN modules, full-storage behavior and climate-request isolation. Also exercise map clicks, pan/zoom, touch and numeric inputs in the browser; check an offline reload and a rapid succession of locations. Solar times use a standard unobstructed horizon; they are not predictions of local terrain shadows or atmospheric conditions.
 
 By hand: compare renders with the approved looks described in `AGENTS.md`, at the same seed and vantage, and check mobile and landscape layouts, native dragging, cloud crossings and a full day cycle. Physical-phone performance needs a device; no universal 60 fps claim is made.
 

@@ -208,3 +208,12 @@ export function seasonForDate(date, latitude) {
   }
   return 0;
 }
+
+// Keep the month/day when jumping years; leap day clamps to February 28.
+export function shiftCalendarYear(date, step) {
+  if (!validDate(date) || !Number.isInteger(step)) return date;
+  const year = Math.min(2099, Math.max(1901, +date.slice(0, 4) + step));
+  const month = +date.slice(5, 7), day = +date.slice(8, 10);
+  const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+}

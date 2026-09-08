@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { apparentDirection, civilTime, dateForSeason, horizonCrossings, hourAtPhase, phaseAtHour, seasonForDate, solarDay, solarPosition, validDate } from '../src/astronomy.js';
-import { aggregateClimate, calendarIndex, climateEcology, climateOnDate, climateURL, createClimateCache, estimateClimate, geographicClimate, speciesSuitability, validClimate, validCoordinates } from '../src/climate.js';
+import { climateEcology, climateOnDate, estimateClimate, geographicClimate, speciesSuitability, validClimate, validCoordinates } from '../src/climate.js';
 import { DEFAULT_CLIMATE } from '../src/climate-default.js';
-import { createGeography } from '../src/geography.js';
 import { WORLD_LAND } from '../src/world-map-data.js';
 import { wrapLongitude } from '../src/world-map.js';
 const close = (a, b, tolerance = 1e-8) => assert.ok(Math.abs(a - b) <= tolerance, `${a} differs from ${b}`);
@@ -65,58 +64,20 @@ for (const year of [1901, 2024, 2026, 2099]) {
 assert.equal(dateForSeason(0.25, 2026, -33), '2026-12-21');
 
 assert.ok(validClimate(DEFAULT_CLIMATE));
+assert.equal(DEFAULT_CLIMATE.rows.length, 15);
 const beijing = climateEcology(DEFAULT_CLIMATE);
-assert.ok(beijing.annualTemperature > 10 && beijing.annualTemperature < 16);
-assert.ok(beijing.precipitation > 400 && beijing.precipitation < 700);
-assert.ok(climateOnDate(DEFAULT_CLIMATE, '2026-07-15').mean > climateOnDate(DEFAULT_CLIMATE, '2026-01-15').mean + 25);
+assert.equal(climateOnDate(DEFAULT_CLIMATE, '2004-08-21').low, 21.3);
+assert.equal(climateOnDate(DEFAULT_CLIMATE, '2004-08-21').high, 27.8);
+assert.equal(climateOnDate(DEFAULT_CLIMATE, '2004-08-21').rain, 0.1);
+assert.equal(climateOnDate(DEFAULT_CLIMATE, '2026-08-21').source, 'estimate', 'never reuse another year as actual weather');
 assert.equal(speciesSuitability('palm', beijing), 0);
 assert.equal(speciesSuitability('acacia', beijing), 0);
 assert.equal(climateEcology(estimateClimate(90, 0)).treeCover, 0);
 assert.ok(climateEcology(estimateClimate(0, 100)).treeCover > 0.9);
 assert.notDeepEqual(geographicClimate(0.5, 0.5, beijing), geographicClimate(0.5, 0.5, climateEcology(estimateClimate(0, 100))));
-assert.equal(calendarIndex('2024-02-29'), 58.5);
-const leap = climateOnDate(DEFAULT_CLIMATE, '2024-02-29');
-close(leap.mean, (DEFAULT_CLIMATE.rows[58][2] + DEFAULT_CLIMATE.rows[59][2]) / 2);
-
-const fields = ['temperature_2m_min', 'temperature_2m_max', 'temperature_2m_mean', 'precipitation_sum', 'et0_fao_evapotranspiration'];
-const raw = { latitude: 0, longitude: 0, timezone: 'UTC', daily_units: Object.fromEntries(fields.map((f, i) => [f, i < 3 ? '°C' : 'mm'])), daily: { time: [] } };
-for (const field of fields) raw.daily[field] = [];
-for (let utc = Date.UTC(1991, 0, 1); utc < Date.UTC(2021, 0, 1); utc += 86400000) {
-  const date = new Date(utc), v = date.getUTCFullYear() - 1990;
-  raw.daily.time.push(date.toISOString().slice(0, 10));
-  [v, v + 10, v + 5, 1, 2].forEach((value, i) => raw.daily[fields[i]].push(value));
-}
-const aggregated = aggregateClimate(raw, 0, 0);
-assert.ok(validClimate(aggregated)); assert.equal(aggregated.rows.length, 365);
-assert.deepEqual(aggregated.rows[0].slice(0, 5), [15.5, 25.5, 20.5, 1, 2]);
-close(aggregated.rows[0][5], Math.sqrt(77.5), 0.001); assert.equal(aggregated.rows[0][7], 30);
-raw.daily.temperature_2m_min[0] = null;
-assert.equal(aggregateClimate(raw, 0, 0).rows[0][7], 29, 'missing values are not zero degrees');
-assert.throws(() => aggregateClimate({ ...raw, daily: { ...raw.daily, precipitation_sum: [] } }, 0, 0));
-const storage = { value: null, getItem() { return this.value; }, setItem(_, value) { this.value = value; } };
-const cache = createClimateCache(storage); cache.put(DEFAULT_CLIMATE);
-assert.deepEqual(createClimateCache(storage).get(39.9, 116.4), DEFAULT_CLIMATE);
-storage.value = '[{"source":"ERA5","rows":null}]';
-assert.equal(createClimateCache(storage).get(39.9, 116.4), undefined);
-assert.ok(climateURL(-33.87, 151.21).includes('models=era5'));
-assert.ok(!validCoordinates(91, 0) && !validCoordinates(0, Infinity));
 
 assert.ok(WORLD_LAND.length > 100);
 for (const polygon of WORLD_LAND) for (const ring of polygon) for (const [longitude, latitude] of ring)
   assert.ok(validCoordinates(latitude, longitude));
 assert.equal(wrapLongitude(181), -179); assert.equal(wrapLongitude(-181), 179);
-// Deliberately let an aborted fetch complete to verify that rapid map clicks
-// cannot apply another location's climate or timezone.
-const pending = [], tick = () => new Promise(resolve => setTimeout(resolve, 5));
-const geography = createGeography({}, undefined, (url, options) => new Promise(resolve => pending.push({ url, options, resolve })));
-geography.setLocation(10, 20); geography.load(0); await tick();
-geography.setLocation(-10, 30); geography.load(0); await tick();
-assert.equal(pending[0].options.signal.aborted, true);
-pending[0].resolve({ ok: true, json: async () => raw }); await tick();
-assert.equal(geography.profile.source, 'estimate', 'stale climate response is ignored');
-pending[1].resolve({ ok: true, json: async () => raw }); await tick();
-assert.equal(geography.profile.source, 'ERA5'); assert.equal(geography.profile.latitude, -10);
-geography.setLocation(39.9, 116.4);
-assert.equal(geography.profile.source, 'ERA5'); assert.equal(geography.loading, false);
-geography.dispose();
-console.log(`Geography checks passed: ${fixtures.length} independent solar fixtures (max difference ${largestDifference.toFixed(2)}s), polar/grazing events, DST, leap years, normals, ecology, offline cache and map coordinates.`);
+console.log(`Geography checks passed: ${fixtures.length} independent solar fixtures (max difference ${largestDifference.toFixed(2)}s), polar/grazing events, DST, leap years, historical weather, ecology and map coordinates.`);

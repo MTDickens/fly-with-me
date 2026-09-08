@@ -108,10 +108,10 @@ async function cycleChecks() {
     input('timeOfDay', 20.5);
     input('seasonOfYear', 2.4);
     assert(doc.getElementById('daySpeedPreset').value === '', 'custom speed is represented without selecting an incorrect preset');
-    const saved = { day: z.dayPhase, season: z.seasonPhase };
+    const saved = { hour: z.environment.timeOfDay };
     await close(world);
     const again = await open();
-    assert(again.z.resumed && near(again.z.dayPhase, saved.day) && near(again.z.seasonPhase, saved.season), 'resume restores exact time and intermediate season');
+    assert(again.z.resumed && near(again.z.environment.timeOfDay, saved.hour) && again.z.environment.date === '2004-08-21', 'resume restores local hour and opens on the default date');
     assert(again.z.cycleSpeeds.day === 2.75 && again.z.cycleSpeeds.season === 0, 'reload preserves a custom speed and a frozen cycle');
     await close(again);
     const legacy = JSON.parse(localStorage.getItem('fly-with-me-resume'));
@@ -119,7 +119,7 @@ async function cycleChecks() {
     localStorage.setItem('fly-with-me-resume', JSON.stringify(legacy));
     localStorage.setItem('fly-with-me-settings', JSON.stringify({daySpeed: -10, seasonSpeed: 'bad'}));
     const old = await open();
-    assert(old.z.resumed && old.z.seasonPhase === 0.25, 'older saves resume with summer as the missing-season default');
+    assert(old.z.resumed && old.z.environment.date === '2004-08-21', 'older saves also open on the default date');
     assert(old.z.cycleSpeeds.day === 1 && old.z.cycleSpeeds.season === 1, 'invalid stored rates safely use defaults');
     await close(old);
     return { checks, seasonalDifferences };

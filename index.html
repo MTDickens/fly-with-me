@@ -298,6 +298,8 @@
       #cyclePanel .cycle-presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.2rem, 1fr)); gap: 0.35rem; margin: 0.55rem 0 0.75rem; }
       #cyclePanel button { justify-content: center; text-decoration: none; background: #e9e4dc12; border: 1px solid #e9e4dc33; border-radius: 6px; }
       #cyclePanel button:hover { background: #e9e4dc28; }
+      #cyclePanel .calendar-navigation { grid-template-columns: 1fr auto 1fr; }
+      #calendarYearValue { align-self: center; text-align: center; font-variant-numeric: tabular-nums; }
       #cyclePanel select { width: 100%; min-height: 44px; padding: 0.4rem; font: inherit; color: inherit; background: #203b30; border: 1px solid #e9e4dc55; border-radius: 6px; }
       #cyclePanel p { font-size: 0.8rem; line-height: 1.5; margin: 0.9rem 0 0; opacity: 0.85; }
       #cyclePanel .world-map { margin: 0.6rem 0; }
@@ -421,15 +423,22 @@
               </div>
               <button class="apply-location" type="submit">Apply coordinates</button>
             </form>
-            <p id="climateStatus" role="status">ERA5 · 1991–2020 daily normals</p>
-            <button id="retryClimate" type="button" hidden>Retry climate</button>
+            <p id="climateStatus" role="status">ERA5 · 2004-08-21 · daily weather</p>
+            <button id="retryClimate" type="button" hidden>Retry weather</button>
             <div class="climate-stats">
-              <div><span>Typical low / high</span><output id="temperatureValue"></output></div>
+              <div><span>Daily low / high</span><output id="temperatureValue"></output></div>
               <div><span>Precipitation</span><output id="precipitationValue"></output></div>
               <div><span>Estimated vegetation</span><output id="vegetationValue"></output></div>
             </div>
             <p id="climateVariation"></p>
-            <p>Climate data: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo / ERA5</a>, averaged by calendar day. Loaded locations are cached offline. The landscape is procedural, with climate-estimated vegetation.</p>
+            <label for="weatherCacheDays">Weather cache · days either side</label>
+            <select id="weatherCacheDays">
+              <option value="0">Selected day only · 1 day</option><option value="3">±3 days · 7 days</option>
+              <option value="7" selected>±1 week · 15 days</option><option value="14">±2 weeks · 29 days</option>
+              <option value="30">±30 days · 61 days</option>
+            </select>
+            <p>Saved dates: <span id="cacheRange"></span>. A missing date loads a window around it. Smaller ranges save data; larger ranges allow more offline exploring.</p>
+            <p>Climate data: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo / ERA5</a>, daily historical weather. Cached dates work offline. The landscape and vegetation are procedural estimates.</p>
           </fieldset>
           <fieldset>
             <legend>Time of day</legend>
@@ -462,9 +471,15 @@
           <fieldset>
             <legend>Season</legend>
             <label for="calendarDate">Calendar date</label>
-            <input id="calendarDate" type="date" min="1901-01-01" max="2099-12-31" />
+            <input id="calendarDate" type="date" min="1901-01-01" max="2099-12-31" value="2004-08-21" />
+            <div class="cycle-presets calendar-navigation" role="group" aria-label="Change calendar year">
+              <button type="button" data-year-step="-1" aria-label="Previous year">← Year</button>
+              <output id="calendarYearValue" aria-live="polite">2004</output>
+              <button type="button" data-year-step="1" aria-label="Next year">Year →</button>
+            </div>
+            <p>Opens on 2004-08-21. Calendar changes also move the season slider. February 29 becomes February 28 in a non-leap year.</p>
             <p id="hemisphereValue"></p>
-            <div class="cycle-label"><label for="seasonOfYear">Year</label><output id="seasonValue" for="seasonOfYear" aria-live="off">Summer</output></div>
+            <div class="cycle-label"><label for="seasonOfYear">Season in selected year</label><output id="seasonValue" for="seasonOfYear" aria-live="off">Summer</output></div>
             <input id="seasonOfYear" type="range" min="0" max="4" step="0.01" value="1" list="seasonTicks" />
             <datalist id="seasonTicks"><option value="0"></option><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option></datalist>
             <div class="cycle-scale" aria-hidden="true"><span>Spring</span><span>Summer</span><span>Autumn</span><span>Winter</span><span>Spring</span></div>

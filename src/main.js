@@ -67,8 +67,8 @@ import { createMilkyWay } from './milky-way.js';
 import { DAY_SECONDS, YEAR_SECONDS, advancePhase, formatHour, validCycleSpeed, wrapPhase, legacyHourForPhase } from './cycles.js';
 import { createSeasonAppearance } from './seasons.js';
 import { createCycleControls } from './cycle-controls.js';
-import { apparentDirection, civilTime, dateForSeason, horizonCrossings, horizontalDirection, hourAtPhase, phaseAtHour, seasonForDate, solarDay, solarPosition, validDate } from './astronomy.js';
-import { climateOnDate, geographicClimate, speciesSuitability, validCoordinates } from './climate.js';
+import { apparentDirection, civilTime, dateForSeason, horizonCrossings, horizontalDirection, hourAtPhase, phaseAtHour, seasonForDate, shiftCalendarYear, solarDay, solarPosition, validDate } from './astronomy.js';
+import { climateOnDate, DEFAULT_DATE, geographicClimate, speciesSuitability, validCoordinates, weatherWindow } from './climate.js';
 import { createGeography } from './geography.js';
 import { enableOffline } from './offline.js';
 import { SWATCH, LEAVES, swatchColor, colorProblem, validateLibrary, validateBaked, BUDGET } from '../library/contract.js';
@@ -147,17 +147,18 @@ let seed = parseInt(params.get('seed'), 10);
 if (!Number.isFinite(seed))
   seed = finite(storedFlight?.seed, 0, 0xffffffff) ?? (Math.random() * 0xffffffff) >>> 0;
 seed = seed >>> 0;
-if (storedFlight?.seed === seed) seasonPhase = finite(storedFlight.seasonPhase, 0, 1) ?? 0.25;
-let calendarYear = finite(storedFlight?.seed === seed ? storedFlight.calendarYear : null, 1901, 2099)
-  ?? finite(storedSettings.calendarYear, 1901, 2099) ?? new Date().getUTCFullYear();
-calendarYear = Math.floor(calendarYear);
+// Each opening starts on the requested date, including a resumed flight.
+// Flight position, local hour and independent rate preferences still resume.
+let calendarYear = +DEFAULT_DATE.slice(0, 4);
 let timezoneMode = storedSettings.timezoneMode === 'utc' ? 'utc' : 'auto';
 let climateStorage;
 try { climateStorage = localStorage; } catch { /* private browsing may deny storage */ }
 const urlLatitude = params.has('lat') ? Number(params.get('lat')) : NaN;
 const urlLongitude = params.has('lon') ? Number(params.get('lon')) : NaN;
 const geography = createGeography(validCoordinates(urlLatitude, urlLongitude)
-  ? { latitude: urlLatitude, longitude: urlLongitude } : storedSettings.geography, climateStorage);
+  ? { latitude: urlLatitude, longitude: urlLongitude, cacheDays: storedSettings.weatherCacheDays }
+  : { ...storedSettings.geography, cacheDays: storedSettings.weatherCacheDays }, climateStorage);
+seasonPhase = seasonForDate(DEFAULT_DATE, geography.latitude);
 let celestialDay = solarDay(dateForSeason(seasonPhase, calendarYear, geography.latitude), geography.latitude, geography.longitude,
   timezoneMode === 'utc' ? 'UTC' : geography.timezone);
 const geographicBase = uniform(new THREE.Vector2(geography.ecology.temperature, geography.ecology.moisture));
@@ -2254,6 +2255,7 @@ function refreshSkyCalendar(preserveHour = true) {
   celestialDay.key = key;
   if (hour !== null && Math.abs(hourAtPhase(celestialDay, dayPhase) - hour) > 1e-8) dayPhase = phaseAtHour(celestialDay, hour);
   rebuildSkyEvents();
+  geography.setDate(celestialDay.date);
 }
 const isNight = phase => solarPosition(celestialDay.start + phase * (celestialDay.end - celestialDay.start), geography.latitude, geography.longitude).altitude < -0.833;
 const SUNRISE_AZIMUTH = (() => {
@@ -3110,7 +3112,7 @@ function saveSettings() {
     camera: { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist },
     daySpeed,
     seasonSpeed,
-    calendarYear,
+    weatherCacheDays: geography.cacheDays,
     timezoneMode,
     geography: { latitude: geography.latitude, longitude: geography.longitude, timezone: geography.timezone },
   });
@@ -3272,8 +3274,8 @@ function updateAtmosphere(dt) {
 }
 
 // ---------------------------------------------------------------------------
-// Resume. A remembered flight in this world continues from its exact moment:
-// place, course, time of day and the schedules that hang off the clock.
+// Resume flight position, local hour and schedules. The calendar always
+// opens on DEFAULT_DATE independently of those saved flight controls.
 // ---------------------------------------------------------------------------
 function restoreFlight(stored) {
   if (!stored || stored.seed !== seed) return false;
@@ -3296,9 +3298,11 @@ function restoreFlight(stored) {
     pitch: n('pitch', -1, 1) ?? 0,
     yawRate: n('yawRate', -1, 1) ?? 0,
   });
-  seasonPhase = (n('seasonPhase', 0, 1) ?? 0.25) % 1;
+  seasonPhase = seasonForDate(DEFAULT_DATE, geography.latitude);
   refreshSkyCalendar(false);
-  dayPhase = stored.clockVersion === 2 ? phase % 1 : phaseAtHour(celestialDay, legacyHourForPhase(phase));
+  const savedHour = n('localHour', 0, 24);
+  dayPhase = savedHour !== null ? phaseAtHour(celestialDay, savedHour)
+    : stored.clockVersion === 2 ? phase % 1 : phaseAtHour(celestialDay, legacyHourForPhase(phase));
   cloudSchedule = n('cloudSchedule', 0, 1) ?? 0;
   cloudOrigin = n('cloudOrigin') ?? -150;
   const low = stored.low ?? {},
@@ -3336,6 +3340,7 @@ function flightMemory() {
     seasonPhase,
     calendarYear,
     clockVersion: 2,
+    localHour: hourAtPhase(celestialDay, dayPhase),
     cloudSchedule,
     cloudOrigin,
     low: { next: flight.lowNext, until: flight.lowUntil, on: flight.low, amount: flight.lowAmount },
@@ -3392,13 +3397,17 @@ function worldControlsState() {
     timezone: `${celestialDay.zone} · UTC${offset}${timezoneMode === 'auto' && geography.profile.source !== 'ERA5' && geography.timezone === 'UTC' ? ' · local timezone unavailable' : ''}`,
     sunrise: eventTime(celestialDay.sunrise), sunset: eventTime(celestialDay.sunset),
     daylight: `${Math.floor(dayMinutes / 60)}h ${dayMinutes % 60}m`, timePresets: timePresets(),
-    climateStatus: geography.status, canRetryClimate: !geography.loading && geography.profile.source !== 'ERA5',
+    climateStatus: geography.status, weatherCacheDays: geography.cacheDays,
+    cacheRange: geography.profile.source === 'ERA5' ? `${geography.profile.startDate} – ${geography.profile.endDate}` : 'No saved dates here',
+    canRetryClimate: !geography.loading && weather.source !== 'ERA5'
+      && !!weatherWindow(celestialDay.date, geography.cacheDays),
     temperature: `${weather.low.toFixed(1)} / ${weather.high.toFixed(1)} °C`,
-    precipitation: `${weather.rain.toFixed(1)} mm/day · ${Math.round(ecology.precipitation)} mm/year`,
+    precipitation: `${weather.rain.toFixed(1)} mm · ${celestialDay.date}`,
     vegetation: ecology.vegetation,
-    variation: weather.samples ? `Across ${Math.round(weather.samples)} years: low σ ${weather.lowDeviation.toFixed(1)} °C · high σ ${weather.highDeviation.toFixed(1)} °C. These are climate averages, not today's weather.`
-      : 'Latitude-based estimate; local rain, terrain and coast effects need climate data.',
-    hemisphere: `${geography.latitude < 0 ? 'Southern' : 'Northern'} hemisphere${Math.abs(geography.latitude) < 23.44 ? ' · tropical wet/dry patterns come from the climate data' : ''}` };
+    variation: weather.source === 'ERA5'
+      ? `Daily reanalysis for ${celestialDay.date}, in the location's local timezone. Vegetation remains an estimate; a short weather window cannot establish annual climate.`
+      : `Estimated weather for ${celestialDay.date}; this date is not cached. Vegetation uses a coarse geographic estimate.`,
+    hemisphere: `${geography.latitude < 0 ? 'Southern' : 'Northern'} hemisphere · slider stays in ${calendarYear}` };
 }
 function previewWorldChange() {
   updateAtmosphere(0);
@@ -3413,6 +3422,13 @@ function changeWorldControl(field, value) {
   if (field === 'location') {
     if (value && validCoordinates(value.latitude, value.longitude)) geography.setLocation(value.latitude, value.longitude);
     return;
+  }
+  if (field === 'yearStep') {
+    if (value !== -1 && value !== 1) return;
+    value = shiftCalendarYear(celestialDay.date, value); field = 'date';
+  }
+  if (field === 'weatherCacheDays') {
+    geography.setCacheDays(value); saveSettings(); return;
   }
   if (field === 'date') {
     if (!validDate(value)) return;
@@ -3436,7 +3452,7 @@ function changeWorldControl(field, value) {
 }
 const cycleControls = createCycleControls({ read: worldControlsState, change: changeWorldControl, commit: saveFlight });
 let southernHemisphere = geography.latitude < 0;
-geography.onChange = ({ climateChanged }) => {
+geography.onChange = ({ climateChanged, weatherChanged }) => {
   if (disposed) return;
   if (southernHemisphere !== (geography.latitude < 0)) {
     seasonPhase = seasonForDate(celestialDay.date, geography.latitude);
@@ -3455,6 +3471,7 @@ geography.onChange = ({ climateChanged }) => {
     document.getElementById('shareLink').href = shareUrl.toString();
     saveSettings(); saveFlight();
   }
+  if (weatherChanged && !climateChanged) previewWorldChange();
   cycleControls.sync(true);
 };
 cycleControls.sync(true);
@@ -3841,7 +3858,7 @@ window.__fly = {
   get nightShare() { return 1 - celestialDay.daylight * 3600000 / (celestialDay.end - celestialDay.start); },
   get astronomy() { return { ...celestialDay, latitude: geography.latitude, longitude: geography.longitude }; },
   get environment() { return worldControlsState(); },
-  get climate() { return { source: geography.profile.source, ecology: geography.ecology, daily: climateOnDate(geography.profile, celestialDay.date) }; },
+  get climate() { const daily = climateOnDate(geography.profile, celestialDay.date); return { source: daily.source, ecology: geography.ecology, daily }; },
   setEnvironment: changeWorldControl,
   deck: DECK_Y,
   get cloudCycle() {
