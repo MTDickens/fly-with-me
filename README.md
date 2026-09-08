@@ -32,13 +32,9 @@
   /></a>
 </p>
 
-<h3 align="center">A bird crossing an endless world, above and below the clouds.</h3>
+<h3 align="center">Watch a bird fly across an infinite goegeous world.</h3>
 
-<p align="center">A quiet page that asks nothing of you. <a href="https://kunchenguid.github.io/fly-with-me/">Open it and press Begin.</a></p>
-
-Every world opens the same way: ten seconds before sunrise over oak hills, a turn into the sun as it clears the horizon, a climb through the clouds and back under them. Then the bird flies itself, across ten biomes that blend into one another and past the quiet ruins of an older world, through a ten-minute day and a dark night, turning of its own accord to meet the low sun, the moon and the core of the Milky Way. Drag to look around it, drag with the right button to steer it, or do nothing at all; the page remembers where you left off. There is no score, no goal and no end.
-
-It is one page and nothing else. The world, the light and the sound are made in your browser from a seed, and the only thing fetched besides the page is Three.js.
+<p align="center"><a href="https://kunchenguid.github.io/fly-with-me/">Open it and press Begin.</a></p>
 
 ## Using it
 
@@ -53,7 +49,6 @@ It is one page and nothing else. The world, the light and the sound are made in 
 - [`VISION.md`](VISION.md): what the page is for, the experience it is meant to create, and what it welcomes and refuses.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): how to run, check and publish it, and how to add a biome, a tree, a ruin or anything else to the world.
 - [`AGENTS.md`](AGENTS.md): the engine's rules, for agents and anyone changing `src/`.
-- [`docs/perf-notes.md`](docs/perf-notes.md): what a frame costs and what is left to win.
 
 ## License
 
