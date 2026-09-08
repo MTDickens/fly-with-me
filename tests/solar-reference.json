@@ -1,0 +1,133 @@
+{
+  "source": "Astronomy Engine 2.1.19, SearchRiseSet, sea-level observer; https://github.com/cosinekitty/astronomy",
+  "fixtures": [
+    {
+      "date": "2026-06-21",
+      "latitude": 39.9,
+      "longitude": 116.4,
+      "zone": "Asia/Shanghai",
+      "sunrise": "2026-06-20T20:46:00.440Z",
+      "sunset": "2026-06-21T11:46:17.162Z"
+    },
+    {
+      "date": "2026-12-21",
+      "latitude": 39.9,
+      "longitude": 116.4,
+      "zone": "Asia/Shanghai",
+      "sunrise": "2026-12-20T23:32:08.035Z",
+      "sunset": "2026-12-21T08:52:27.868Z"
+    },
+    {
+      "date": "2026-06-21",
+      "latitude": 51.51,
+      "longitude": -0.13,
+      "zone": "Europe/London",
+      "sunrise": "2026-06-21T03:43:07.715Z",
+      "sunset": "2026-06-21T20:21:32.290Z"
+    },
+    {
+      "date": "2026-12-21",
+      "latitude": 51.51,
+      "longitude": -0.13,
+      "zone": "Europe/London",
+      "sunrise": "2026-12-21T08:03:44.318Z",
+      "sunset": "2026-12-21T15:53:25.365Z"
+    },
+    {
+      "date": "2026-06-21",
+      "latitude": -33.87,
+      "longitude": 151.21,
+      "zone": "Australia/Sydney",
+      "sunrise": "2026-06-20T20:59:58.940Z",
+      "sunset": "2026-06-21T06:53:46.977Z"
+    },
+    {
+      "date": "2026-12-21",
+      "latitude": -33.87,
+      "longitude": 151.21,
+      "zone": "Australia/Sydney",
+      "sunrise": "2026-12-20T18:40:37.085Z",
+      "sunset": "2026-12-21T09:05:25.522Z"
+    },
+    {
+      "date": "2026-03-08",
+      "latitude": 40.71,
+      "longitude": -74.01,
+      "zone": "America/New_York",
+      "sunrise": "2026-03-08T11:18:53.068Z",
+      "sunset": "2026-03-08T22:55:12.121Z"
+    },
+    {
+      "date": "2026-11-01",
+      "latitude": 40.71,
+      "longitude": -74.01,
+      "zone": "America/New_York",
+      "sunrise": "2026-11-01T11:26:27.006Z",
+      "sunset": "2026-11-01T21:52:15.349Z"
+    },
+    {
+      "date": "2026-06-21",
+      "latitude": 69.65,
+      "longitude": 18.96,
+      "zone": "Europe/Oslo",
+      "sunrise": null,
+      "sunset": null
+    },
+    {
+      "date": "2026-12-21",
+      "latitude": 69.65,
+      "longitude": 18.96,
+      "zone": "Europe/Oslo",
+      "sunrise": null,
+      "sunset": null
+    },
+    {
+      "date": "2024-02-29",
+      "latitude": 1.35,
+      "longitude": 103.82,
+      "zone": "Asia/Singapore",
+      "sunrise": "2024-02-28T23:14:35.803Z",
+      "sunset": "2024-02-29T11:19:45.303Z"
+    },
+    {
+      "date": "2026-04-15",
+      "latitude": 78.22,
+      "longitude": 15.65,
+      "zone": "Arctic/Longyearbyen",
+      "sunrise": "2026-04-15T00:45:03.282Z",
+      "sunset": "2026-04-15T21:24:07.407Z"
+    },
+    {
+      "date": "2026-09-22",
+      "latitude": 90,
+      "longitude": 0,
+      "zone": "UTC",
+      "sunrise": null,
+      "sunset": null
+    },
+    {
+      "date": "2026-09-22",
+      "latitude": -90,
+      "longitude": 0,
+      "zone": "UTC",
+      "sunrise": null,
+      "sunset": null
+    },
+    {
+      "date": "1901-03-21",
+      "latitude": 0,
+      "longitude": 179.9,
+      "zone": "UTC",
+      "sunrise": "1901-03-21T18:04:27.981Z",
+      "sunset": "1901-03-21T06:11:16.048Z"
+    },
+    {
+      "date": "2099-09-21",
+      "latitude": 0,
+      "longitude": -179.9,
+      "zone": "UTC",
+      "sunrise": "2099-09-21T17:49:12.139Z",
+      "sunset": "2099-09-21T05:56:00.911Z"
+    }
+  ]
+}

@@ -33,12 +33,17 @@ async function cycleChecks() {
     input('daySpeedPreset', 0, 'change');
     input('seasonSpeedPreset', 0, 'change');
     for (const [hour, expected] of [[6, '06:00'], [12, '12:00'], [18, '18:00'], [0, '00:00']]) {
-      button('timeOfDay', hour);
-      assert(near(z.solar(z.dayPhase) * 24, hour), `time preset sets ${expected} on the solar clock`);
+      input('timeOfDay', hour);
+      assert(near(z.environment.timeOfDay, hour), `time slider sets ${expected} on the local civil clock`);
       assert(doc.getElementById('timeValue').value === expected, `time output shows ${expected}`);
     }
+    for (const name of ['sunrise', 'noon', 'sunset', 'midnight']) {
+      doc.querySelector(`[data-time-preset="${name}"]`).click();
+      const day = z.astronomy, utc = name === 'midnight' ? day.start : day[name];
+      assert(near(z.dayPhase, (utc - day.start) / (day.end - day.start)), `${name} preset selects the actual local event`);
+    }
     input('timeOfDay', 15.5);
-    assert(near(z.solar(z.dayPhase) * 24, 15.5) && doc.getElementById('timeValue').value === '15:30', 'continuous time slider sets a custom hour');
+    assert(near(z.environment.timeOfDay, 15.5) && doc.getElementById('timeValue').value === '15:30', 'continuous time slider sets a custom hour');
     input('timeOfDay', 24);
     assert(near(z.dayPhase, 0), '24:00 wraps to midnight');
     input('seasonOfYear', 3.5);
@@ -59,7 +64,7 @@ async function cycleChecks() {
     stepSecond();
     assert(z.dayPhase === start.day && z.seasonPhase === start.season, 'both frozen cycles stay frozen while flight advances');
     input('daySpeed', 4);
-    button('timeOfDay', 12);
+    input('timeOfDay', 12);
     button('seasonOfYear', 2);
     assert(z.cycleSpeeds.day === 4 && z.cycleSpeeds.season === 0, 'time and season presets preserve independent speeds');
     stepSecond();
@@ -77,7 +82,7 @@ async function cycleChecks() {
     stepSecond();
     assert(z.dayPhase === frozenDay && near(z.seasonPhase, movingSeason + 60 / 2400), 'season continues with day frozen');
     input('seasonSpeed', 0);
-    button('timeOfDay', 12);
+    input('timeOfDay', 12);
     const captures = [];
     for (const season of [1, 0, 2, 3]) {
       button('seasonOfYear', season);
@@ -93,7 +98,7 @@ async function cycleChecks() {
     };
     const seasonalDifferences = captures.slice(1).map(image => delta(captures[0], image));
     assert(seasonalDifferences.every(difference => difference > 0.0001), 'spring, autumn and winter visibly differ from summer at the same place and hour');
-    button('timeOfDay', 0);
+    input('timeOfDay', 0);
     await wait(150);
     const night = await z.capture(128, 72);
     assert(delta(captures[3], night) > 0.001, 'winter also responds to day/night lighting');

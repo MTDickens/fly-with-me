@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Folds index.html and every local module it reaches into dist/index.html: one
-// file, the same page, nothing else needed to open it. Three.js stays on its
+// file, the same page. Three.js stays on its
 // CDN through the import map. No dependencies; Node 18 or later.
 //
 //   node tools/bundle.mjs            writes dist/index.html
@@ -137,18 +137,27 @@ if (!tag.test(page)) throw new Error('index.html does not load ./src/main.js the
 const out = page.replace(tag, () => `    <script type="module">\n${bundle}\n    </script>`);
 
 const outPath = path.join(root, OUT);
+const extras = ['.nojekyll', 'offline-worker.js', 'LICENSE', 'DATA-SOURCES.md'];
 if (process.argv.includes('--check')) {
   const current = await readFile(outPath, 'utf8').catch(() => null);
   if (current !== out) {
     console.error(`${OUT} is stale; run node tools/bundle.mjs`);
     process.exit(1);
   }
+  for (const extra of extras) {
+    const expected = await readFile(path.join(root, extra));
+    const actual = await readFile(path.join(root, 'dist', extra)).catch(() => null);
+    if (!actual?.equals(expected)) {
+      console.error(`dist/${extra} is stale; run node tools/bundle.mjs`);
+      process.exit(1);
+    }
+  }
   console.log(`${OUT} is current`);
 } else {
   await mkdir(path.dirname(outPath), { recursive: true });
   await writeFile(outPath, out);
-  // .nojekyll rides along so Pages serves the file as it is
-  for (const extra of ['.nojekyll']) {
+  // Static hosts use the same offline worker and preserve source/data credits.
+  for (const extra of extras) {
     const from = path.join(root, extra);
     if (await access(from).then(() => true, () => false)) await cp(from, path.join(root, 'dist', extra), { recursive: true });
   }

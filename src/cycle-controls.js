@@ -1,4 +1,7 @@
 import { DAY_SECONDS, YEAR_SECONDS, formatHour, formatSeason } from './cycles.js';
+import { createWorldMap } from './world-map.js';
+import { LOCATION_PRESETS } from './geography.js';
+import { validCoordinates } from './climate.js';
 
 export function createCycleControls({ read, change, commit }) {
   const panel = document.getElementById('cycleControls');
@@ -9,6 +12,51 @@ export function createCycleControls({ read, change, commit }) {
   const dragging = new Set();
   let lastSync = -Infinity;
   const fields = [time, season, daySpeed, seasonSpeed];
+  const date = document.getElementById('calendarDate');
+  const latitude = document.getElementById('latitudeNumber'), longitude = document.getElementById('longitudeNumber');
+  let lastLocation = '';
+  const text = (id, value) => {
+    const node = document.getElementById(id);
+    if (node.textContent !== value) node.textContent = value;
+  };
+  const applyLocation = ({ latitude: lat, longitude: lon }) => {
+    change('location', { latitude: +lat.toFixed(3), longitude: +lon.toFixed(3) });
+    sync(true); commit();
+  };
+  const map = createWorldMap(document.getElementById('worldMap'), applyLocation);
+  document.getElementById('mapZoomIn').addEventListener('click', () => map.zoom(1.5));
+  document.getElementById('mapZoomOut').addEventListener('click', () => map.zoom(1 / 1.5));
+  document.getElementById('mapReset').addEventListener('click', map.reset);
+  const locationPreset = document.getElementById('locationPreset');
+  LOCATION_PRESETS.forEach((preset, index) => {
+    const option = document.createElement('option'); option.value = String(index); option.textContent = preset.name;
+    locationPreset.append(option);
+  });
+  locationPreset.addEventListener('change', () => {
+    const preset = LOCATION_PRESETS[Number(locationPreset.value)];
+    if (preset) { applyLocation(preset); map.select(preset.latitude, preset.longitude, true); }
+  });
+  for (const [number, id] of [[latitude, 'latitude'], [longitude, 'longitude']]) {
+    const range = document.getElementById(id);
+    range.addEventListener('input', () => { number.value = range.value; previewPin(); });
+    number.addEventListener('input', () => {
+      if (number.value && number.validity.valid) { range.value = number.value; previewPin(); }
+    });
+  }
+  function previewPin() {
+    if (latitude.value && longitude.value && validCoordinates(+latitude.value, +longitude.value)) map.select(+latitude.value, +longitude.value);
+  }
+  document.getElementById('locationForm').addEventListener('submit', event => {
+    event.preventDefault();
+    if (latitude.reportValidity() && longitude.reportValidity() && latitude.value && longitude.value)
+      applyLocation({ latitude: +latitude.value, longitude: +longitude.value });
+  });
+  document.getElementById('retryClimate').addEventListener('click', () => change('retryClimate'));
+  date.addEventListener('change', () => { if (date.validity.valid) { change('date', date.value); sync(true); commit(); } });
+  document.getElementById('timezoneMode').addEventListener('change', event => { change('timezoneMode', event.target.value); sync(true); commit(); });
+  for (const button of panel.querySelectorAll('[data-time-preset]')) {
+    button.addEventListener('click', () => { change('timePreset', button.dataset.timePreset); sync(true); commit(); });
+  }
   const speedText = (speed, period, unit) => {
     if (speed === 0) return 'Frozen';
     const duration = period / speed;
@@ -28,6 +76,32 @@ export function createCycleControls({ read, change, commit }) {
     document.getElementById('seasonValue').value = seasonName;
     time.setAttribute('aria-valuetext', hour);
     season.setAttribute('aria-valuetext', seasonName);
+    if (document.activeElement !== date) date.value = values.date;
+    document.getElementById('timezoneMode').value = values.timezoneMode;
+    text('timezoneValue', values.timezone);
+    text('sunriseValue', values.sunrise);
+    text('sunsetValue', values.sunset);
+    text('daylightValue', values.daylight);
+    text('climateStatus', values.climateStatus);
+    text('temperatureValue', values.temperature);
+    text('precipitationValue', values.precipitation);
+    text('vegetationValue', values.vegetation);
+    text('climateVariation', values.variation);
+    text('hemisphereValue', values.hemisphere);
+    document.getElementById('retryClimate').hidden = !values.canRetryClimate;
+    for (const button of panel.querySelectorAll('[data-time-preset]')) {
+      button.disabled = values.timePresets[button.dataset.timePreset] === null;
+    }
+    const location = `${values.latitude}/${values.longitude}`;
+    if (location !== lastLocation) {
+      lastLocation = location;
+      latitude.value = String(values.latitude); longitude.value = String(values.longitude);
+      document.getElementById('latitude').value = latitude.value;
+      document.getElementById('longitude').value = longitude.value;
+      map.select(values.latitude, values.longitude);
+      const preset = LOCATION_PRESETS.findIndex(p => Math.abs(p.latitude - values.latitude) < 0.0005 && Math.abs(p.longitude - values.longitude) < 0.0005);
+      locationPreset.value = preset < 0 ? '' : String(preset);
+    }
     for (const [field, period, unit] of [[daySpeed, DAY_SECONDS, 'day'], [seasonSpeed, YEAR_SECONDS, 'year']]) {
       const text = speedText(values[field.id], period, unit);
       document.getElementById(`${field.id}Value`).value = text;
@@ -61,12 +135,15 @@ export function createCycleControls({ read, change, commit }) {
       commit();
     });
   }
-  panel.addEventListener('toggle', () => sync(true));
+  panel.addEventListener('toggle', () => { sync(true); map.redraw(); });
   panel.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       panel.open = false;
       panel.querySelector('summary').focus();
     }
   });
-  return { sync };
+  return { sync, dispose: () => {
+    map.dispose(); document.removeEventListener('pointerup', release);
+    document.removeEventListener('pointercancel', release); window.removeEventListener('blur', release);
+  } };
 }

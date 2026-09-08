@@ -723,47 +723,35 @@ async function flightChecks() {
     z.step(dt);
     return before + (z.state.yawRate - before) / Math.min(1, dt * 1.5);
   };
+  z.setEnvironment('seasonSpeed', 0);
+  z.setEnvironment('location', { latitude: 39.9, longitude: 116.4 });
+  z.setEnvironment('date', '2026-06-21');
+  z.setEnvironment('daySpeed', 1);
   assert(
-    ['moon', 'sun', 'moon', 'sun'].every((body, i) => z.sky.events[i]?.body === body) &&
-      z.sky.events.every((e, i) => i === 0 || e.phase > z.sky.events[i - 1].phase),
-    'the day has a moonset, a sunrise, a moonrise and a sunset, in that order',
+    z.sky.events.length === 4 && z.sky.events.every((e, i) => i === 0 || e.phase > z.sky.events[i - 1].phase),
+    'sun and artistic moon crossings are ordered within the selected civil day',
   );
   {
-    // The night, sunset to sunrise, is a quarter of the day, found on the arcs the
-    // sky draws; the sun's own clock never runs backward and never jumps its pace.
+    const day = z.astronomy;
     const night = (event('sun', true).phase - event('sun', false).phase + 1) % 1;
-    assert(Math.abs(night - 0.25) < 0.002 && Math.abs(z.nightShare - 0.25) < 0.000001, 'the night is a quarter of the day', `${night.toFixed(4)}`);
-    const samples = 6000;
-    let previous = z.solar(0),
-      previousPace = null,
-      slowest = Infinity,
-      fastest = 0,
-      jump = 0;
-    for (let i = 1; i <= samples; i++) {
-      const s = z.solar(i / samples),
-        pace = (s - previous) * samples;
-      slowest = Math.min(slowest, pace);
-      fastest = Math.max(fastest, pace);
-      if (previousPace !== null) jump = Math.max(jump, Math.abs(pace - previousPace));
-      previousPace = pace;
-      previous = s;
-    }
-    assert(
-      Math.abs(z.solar(1) - 1) < 0.000001 && Math.abs(z.solar(0.5) - 0.5) < 0.000001 && slowest > 0.5 && fastest < 3 && jump < 0.02,
-      'the sun keeps a steady pace by day, hurries through the night, and never jumps between them',
-      `pace ${slowest.toFixed(2)} to ${fastest.toFixed(2)}, largest step ${jump.toFixed(4)}`,
-    );
-    // dusk still takes its time: the afterglow keys of the sky lie within the
-    // first 0.08 of solar phase after the sun sets, and the clock walks them
-    // over a natural stretch of seconds, not a jump into night
-    const sunset = event('sun', false);
-    z.dayPhase = sunset.phase;
-    let dusk = 0;
-    while (z.solar(z.dayPhase) - sunset.solar < 0.08 && dusk < 120) {
+    const expected = 1 - day.daylight * 3600000 / (day.end - day.start);
+    assert(Math.abs(night - expected) < 1e-7 && Math.abs(z.nightShare - expected) < 1e-7,
+      'night length follows the geographic horizon crossings', `${night.toFixed(4)}`);
+    assert(Math.abs(event('sun', true).phase - (day.sunrise - day.start) / (day.end - day.start)) < 1e-7,
+      'sunrise steering and the astronomical clock use the same instant');
+    const wrap = v => ((v % 1) + 1) % 1;
+    for (const phase of [0.1, 0.4, 0.8, 0.9999]) {
+      z.dayPhase = phase;
       z.step(0.05);
-      dusk += 0.05;
+      assert(Math.abs(z.dayPhase - wrap(phase + 0.05 / 600)) < 1e-7,
+        `civil clock advances uniformly through phase ${phase}`);
     }
-    assert(dusk > 20 && dusk < 60, 'the dusk afterglow drains over a natural stretch of seconds', `${dusk.toFixed(1)} s`);
+    z.dayPhase = event('sun', false).phase;
+    z.step(0);
+    const before = z.sky.sun.clone();
+    for (let i = 0; i < 20; i++) z.step(0.05);
+    assert(Number.isFinite(z.sky.sun.y) && z.sky.sun.y < 0 && before.distanceTo(z.sky.sun) < 0.05,
+      'sunset continues smoothly below the horizon');
   }
   z.dayPhase = 0.5;
   z.step(0.05);
@@ -790,8 +778,8 @@ async function flightChecks() {
   }
   assert(Math.abs(wrapAngle(z.state.heading - azimuth(z.sky.sun))) < 0.02, 'the bird keeps following the sun as it climbs');
   assert(maxYaw < 0.21, 'the pull never turns faster than its gentle cap');
-  // The moon sets in the night, where the sun's clock runs fast, so its pull
-  // is a dozen seconds long; these steps stay inside it, before the crossing.
+  // Follow the artistic moon's real rendered crossing; the civil clock keeps
+  // the same rate at night. These steps stay inside its steering window.
   z.dayPhase = event('moon', false).phase - 0.02;
   z.step(0.05);
   z.state.heading = wrapAngle(azimuth(z.sky.moon) - 0.5);
@@ -1086,7 +1074,7 @@ async function flightChecks() {
   // The opening, as a first visitor sees it: nothing remembered, the default
   // framing. Stepped deterministically from Begin: abeam of the sunrise for
   // five seconds, a turn at the sunrise pull's gentle cap to face the sun as it
-  // clears the horizon, a climb through the deck with the day stretched so the
+  // clears the horizon, a climb through the deck at the selected rate while the
   // sun stays low, a hold above the clouds with the sun in the frame and its
   // light on the tops, a dive, and then the flight is its own.
   const firstUrl = new URL(location.href);
@@ -1140,7 +1128,7 @@ async function flightChecks() {
   assert(maxTurn > 0.15 && maxTurn < 0.21, 'the turn is a real bank, capped at the sunrise pull\'s rate', `${maxTurn.toFixed(3)}`);
   assert(f.intro.beat === 'climb' && offSun() < 0.1 && f.state.vy > 5, 'facing the sun, the bird climbs');
   stepTo(O.climbAt + 12);
-  assert(Math.abs(f.dayRate - O.stretch) < 0.02, 'the day is stretched while the bird climbs', `${f.dayRate.toFixed(2)}`);
+  assert(f.dayRate === 1, 'the opening preserves the selected day rate while the bird climbs', `${f.dayRate.toFixed(2)}`);
   stepTo(FT.at + FT.out[1] + 0.05);
   assert(
     f.title.done && f.title.name === 0 && f.title.presents === 0 && Number(titleName.style.opacity) === 0 && f.intro.beat === 'climb',

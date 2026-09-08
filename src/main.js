@@ -64,9 +64,13 @@ import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { hash2, perlin2, fbm, ridged, sstep, mulberry32 } from './noise.js';
 import { createWaterMaterial } from './water.js';
 import { createMilkyWay } from './milky-way.js';
-import { DAY_SECONDS, YEAR_SECONDS, advancePhase, phaseForHour, validCycleSpeed, wrapPhase } from './cycles.js';
+import { DAY_SECONDS, YEAR_SECONDS, advancePhase, formatHour, validCycleSpeed, wrapPhase, legacyHourForPhase } from './cycles.js';
 import { createSeasonAppearance } from './seasons.js';
 import { createCycleControls } from './cycle-controls.js';
+import { apparentDirection, civilTime, dateForSeason, horizonCrossings, horizontalDirection, hourAtPhase, phaseAtHour, seasonForDate, solarDay, solarPosition, validDate } from './astronomy.js';
+import { climateOnDate, geographicClimate, speciesSuitability, validCoordinates } from './climate.js';
+import { createGeography } from './geography.js';
+import { enableOffline } from './offline.js';
 import { SWATCH, LEAVES, swatchColor, colorProblem, validateLibrary, validateBaked, BUDGET } from '../library/contract.js';
 import * as registry from '../library/index.js';
 // Shader motion follows simulation time, including pause and hidden tabs.
@@ -84,37 +88,13 @@ const SEA_LEVEL = 0;
 const DECK_Y = 520; // cloud deck altitude
 const SPEED = 40; // bird speed, m/s
 const wrapAngle = (a) => a - Math.round(a / (Math.PI * 2)) * Math.PI * 2;
-// Night is a quarter of the cycle. The sun keeps its own clock, `solar`: one
-// pace while it is up and a faster one while it is down, the change blended
-// over the twilights so nothing jumps at the crossing. The palette, the sky
-// bodies and the sky events all read solar phase, so the sky stays the one it
-// was tuned as and only the night passes sooner. Midnight is 0, noon is 0.5,
-// in both clocks.
-const NIGHT_SHARE = 0.25; // of the day clock, sunset to sunrise
-const NIGHT_CORE = 0.18; // of the day clock at the night pace, around midnight
-const solar = (() => {
-  const half = NIGHT_SHARE / 2,
-    core = NIGHT_CORE / 2,
-    ramp = half - core;
-  const dayPace = 0.5 / (1 - NIGHT_SHARE); // half the sun's arc over the day
-  // the night's half of the arc: the core at the night pace, each ramp at the mean of both
-  const nightPace = (0.25 - (dayPace * ramp) / 2) / (core + ramp / 2);
-  const rise = (nightPace - dayPace) / 2;
-  const fold = (q) => {
-    // 0..0.5 from midnight; the pace along a ramp is dayPace + rise * (1 + cos)
-    if (q <= core) return nightPace * q;
-    if (q <= half) {
-      const u = (q - core) / ramp;
-      return nightPace * core + ramp * ((dayPace + rise) * u + (rise * Math.sin(Math.PI * u)) / Math.PI);
-    }
-    return 0.25 + dayPace * (q - half);
-  };
-  return (phase) => {
-    const whole = Math.floor(phase),
-      q = phase - whole;
-    return whole + (q <= 0.5 ? fold(q) : 1 - fold(1 - q));
-  };
-})();
+// Palette anchors keep the approved paint, but follow actual solar altitude.
+// There is no compressed night: the civil clock, geometry and events agree.
+function solar(phase) {
+  const p = solarPosition(celestialDay.start + wrapPhase(phase) * (celestialDay.end - celestialDay.start), geography.latitude, geography.longitude);
+  const arc = p.altitude / (p.altitude < 0 ? 225 : 360);
+  return Math.max(0, Math.min(1, p.hourAngle < 0 ? 0.25 + arc : 0.75 - arc));
+}
 
 // ---------------------------------------------------------------------------
 // Memory. The page remembers the viewer's settings, and per world where the
@@ -146,7 +126,7 @@ const storedSettings = remember.read(SETTINGS_KEY) ?? {};
 const storedFlight = remember.read(RESUME_KEY);
 let daySpeed = validCycleSpeed(storedSettings.daySpeed),
   seasonSpeed = validCycleSpeed(storedSettings.seasonSpeed);
-let seasonPhase = 0.25; // summer starts with the original landscape
+let seasonPhase = 0.25;
 const seasonAppearance = createSeasonAppearance();
 
 // ---------------------------------------------------------------------------
@@ -167,9 +147,25 @@ let seed = parseInt(params.get('seed'), 10);
 if (!Number.isFinite(seed))
   seed = finite(storedFlight?.seed, 0, 0xffffffff) ?? (Math.random() * 0xffffffff) >>> 0;
 seed = seed >>> 0;
+if (storedFlight?.seed === seed) seasonPhase = finite(storedFlight.seasonPhase, 0, 1) ?? 0.25;
+let calendarYear = finite(storedFlight?.seed === seed ? storedFlight.calendarYear : null, 1901, 2099)
+  ?? finite(storedSettings.calendarYear, 1901, 2099) ?? new Date().getUTCFullYear();
+calendarYear = Math.floor(calendarYear);
+let timezoneMode = storedSettings.timezoneMode === 'utc' ? 'utc' : 'auto';
+let climateStorage;
+try { climateStorage = localStorage; } catch { /* private browsing may deny storage */ }
+const urlLatitude = params.has('lat') ? Number(params.get('lat')) : NaN;
+const urlLongitude = params.has('lon') ? Number(params.get('lon')) : NaN;
+const geography = createGeography(validCoordinates(urlLatitude, urlLongitude)
+  ? { latitude: urlLatitude, longitude: urlLongitude } : storedSettings.geography, climateStorage);
+let celestialDay = solarDay(dateForSeason(seasonPhase, calendarYear, geography.latitude), geography.latitude, geography.longitude,
+  timezoneMode === 'utc' ? 'UTC' : geography.timezone);
+const geographicBase = uniform(new THREE.Vector2(geography.ecology.temperature, geography.ecology.moisture));
 const shareUrl = new URL(location.href);
 shareUrl.search = '';
 shareUrl.searchParams.set('seed', String(seed));
+shareUrl.searchParams.set('lat', String(geography.latitude));
+shareUrl.searchParams.set('lon', String(geography.longitude));
 document.getElementById('shareLink').href = shareUrl.toString();
 
 // ---------------------------------------------------------------------------
@@ -345,13 +341,11 @@ const CLIMATE_STRETCH = 2.2,
   CLIMATE_SHARPNESS = 2.2;
 const climateAxis = (v) => Math.min(1, Math.max(0, (v - 0.5) * CLIMATE_STRETCH + 0.5));
 function biomeWeights(temp, moist, region, out = new Float32Array(BIOMES.length)) {
-  const t = climateAxis(temp),
-    m = climateAxis(moist),
-    r = climateAxis(region);
+  const [t, m] = geographicClimate(temp, moist, geography.ecology), r = climateAxis(region);
   let nearest = Infinity;
   for (let i = 0; i < BIOMES.length; i++) {
     const [ct, cm, cr] = BIOMES[i].climate;
-    out[i] = ((t - ct) ** 2 + (m - cm) ** 2 + (r - cr) ** 2) / (CLIMATE_RADIUS * CLIMATE_RADIUS);
+    out[i] = ((t - ct) ** 2 + (m - cm) ** 2 + 0.12 * (r - cr) ** 2) / (CLIMATE_RADIUS * CLIMATE_RADIUS);
     nearest = Math.min(nearest, out[i]);
   }
   // Measured from the nearest cell, so the largest weight is one and the
@@ -541,7 +535,7 @@ const pal = {
   hemiGround: C(0),
   hemiI: 1,
 };
-function evalPalette(p) {
+function evalPalette(p, target = pal) {
   p = p - Math.floor(p);
   let i = 0;
   while (KEYS[i + 1].t < p) i++;
@@ -560,9 +554,20 @@ function evalPalette(p) {
     'hemiSky',
     'hemiGround',
   ])
-    pal[k].copy(a[k]).lerp(b[k], t);
-  pal.sunI = a.sunI + (b.sunI - a.sunI) * t;
-  pal.hemiI = a.hemiI + (b.hemiI - a.hemiI) * t;
+    target[k].copy(a[k]).lerp(b[k], t);
+  target.sunI = a.sunI + (b.sunI - a.sunI) * t;
+  target.hemiI = a.hemiI + (b.hemiI - a.hemiI) * t;
+}
+const eveningPalette = Object.fromEntries(Object.entries(pal).map(([key, value]) => [key, value?.isColor ? value.clone() : value]));
+function evalSolarPalette(position) {
+  const arc = position.altitude / (position.altitude < 0 ? 225 : 360);
+  evalPalette(Math.max(0, Math.min(0.5, 0.25 + arc)));
+  evalPalette(Math.max(0.5, Math.min(1, 0.75 - arc)), eveningPalette);
+  const weight = 0.5 + 0.5 * Math.sin(position.hourAngle);
+  for (const key of Object.keys(pal)) {
+    if (pal[key]?.isColor) pal[key].lerp(eveningPalette[key], weight);
+    else pal[key] += (eveningPalette[key] - pal[key]) * weight;
+  }
 }
 
 // uniforms shared by sky, fog, materials
@@ -670,7 +675,8 @@ const starField = Fn(([dir, scale, threshold]) => {
 const skyColor = Fn(([dir]) => {
   const y = dir.y;
   const sunUp = smoothstep(-0.14, 0.02, uSunDir.y);
-  const s = max(dot(dir, uSunDir), 0.0).mul(sunUp);
+  const sunCosine = max(dot(dir, uSunDir), 0.0);
+  const s = sunCosine.mul(sunUp);
   const align = azimuthAlign(dir, uSunDir);
   const anti = azimuthAlign(dir, uSunDir.negate());
   const horizon = horizonTint(dir);
@@ -690,14 +696,14 @@ const skyColor = Fn(([dir]) => {
   const earthShadow = pow(anti, 2).mul(smoothstep(0.06, 0.0, y)).mul(smoothstep(-0.05, 0.01, y)).mul(uVenusI);
   col.assign(mix(col, col.mul(vec3(0.78, 0.84, 1.0)), earthShadow.mul(0.5)));
   // the sun: a disc, a tight glow, and a broad warm halo when it sits low
-  const ang = acos(clamp(s, 0.0, 1.0));
-  const disc = smoothstep(0.03, 0.024, ang);
+  const ang = acos(clamp(sunCosine, 0.0, 1.0));
+  const disc = smoothstep(0.0049, 0.0044, ang); // the Sun's ~0.53° apparent diameter
   const sunCol = mix(uSunColor, uGlow, uLowSun.mul(0.6));
   const glow = pow(s, 30)
     .mul(0.12)
     .add(pow(s, 500).mul(0.6))
     .add(pow(s, 4).mul(uLowSun).mul(0.35));
-  col.addAssign(sunCol.mul(glow.add(disc.mul(mix(1.2, 0.8, uLowSun)))).mul(smoothstep(-0.02, 0.0, y)));
+  col.addAssign(sunCol.mul(glow.add(disc.mul(mix(1.2, 0.8, uLowSun)))).mul(smoothstep(-0.0003, 0.0, y)));
   // the moon: a lit gibbous face with maria and limb darkening, a soft halo
   const m = max(dot(dir, uMoonDir), 0.0);
   const moonRight = normalize(cross(uMoonDir, vec3(0, 1, 0)));
@@ -902,13 +908,13 @@ let terrainMat;
   // The GPU side of biomeWeights: the same cells, the same sharpening, on
   // the triangle's own climate, so ground color and placement agree.
   const climateAxisNode = (v) => v.sub(0.5).mul(CLIMATE_STRETCH).add(0.5).clamp(0, 1);
-  const ct = climateAxisNode(temp),
-    cm = climateAxisNode(moist),
+  const ct = temp.sub(0.5).mul(0.34).add(geographicBase.x).clamp(0, 1),
+    cm = moist.sub(0.5).mul(0.32).add(geographicBase.y).clamp(0, 1),
     cr = climateAxisNode(region);
   const colorNode = Fn(() => {
     const macro = smoothstep(0.18, 0.48, mx_noise_float(positionWorld.xz.mul(0.012)));
     const distances = BIOMES.map(({ climate: [t0, m0, r0] }) =>
-      ct.sub(t0).pow(2).add(cm.sub(m0).pow(2)).add(cr.sub(r0).pow(2)).div(CLIMATE_RADIUS * CLIMATE_RADIUS).toVar(),
+      ct.sub(t0).pow(2).add(cm.sub(m0).pow(2)).add(cr.sub(r0).pow(2).mul(0.12)).div(CLIMATE_RADIUS * CLIMATE_RADIUS).toVar(),
     );
     let nearest = distances[0];
     for (const d of distances.slice(1)) nearest = nearest.min(d);
@@ -1550,8 +1556,7 @@ function placeTrees(bx, bz) {
       if (Math.hypot(ccx - bx, ccz - bz) > TREE_RADIUS) continue;
       const h0 = heightAt(ccx, ccz);
       if (h0 < 3) continue;
-      const temp = fieldAt(ccx, ccz, 1),
-        moist = fieldAt(ccx, ccz, 2);
+      const [temp, moist] = geographicClimate(fieldAt(ccx, ccz, 1), fieldAt(ccx, ccz, 2), geography.ecology);
       biomeAt(ccx, ccz, _weights);
       let density = 0,
         mixTotal = 0;
@@ -1561,8 +1566,9 @@ function placeTrees(bx, bz) {
           biome = BIOMES[i];
         density += w * biome.density;
         for (const [id, weight] of Object.entries(biome.species)) {
-          _mix[speciesIds.indexOf(id)] += w * weight;
-          mixTotal += w * weight;
+          const suitability = speciesSuitability(id, geography.ecology);
+          _mix[speciesIds.indexOf(id)] += w * weight * suitability;
+          mixTotal += w * weight * suitability;
         }
       }
       let s = hash2(gx, gz, seed);
@@ -1604,7 +1610,7 @@ function placeTrees(bx, bz) {
       // This density cap keeps the entire ring inside its fixed allocation.
       const count = Math.min(
         3,
-        Math.floor(density * grove * (1 - sstep(treeline - 120, treeline, h0))),
+        Math.floor(density * geography.ecology.treeCover * grove * (1 - sstep(treeline - 120, treeline, h0))),
       );
       if (count <= 0 || mixTotal <= 0) continue;
       for (let k = 0; k < count && n < MAX_TREES; k++) {
@@ -1765,7 +1771,7 @@ function placeGrass(x, z) {
           pz = (tz + r()) * 64,
           scale = 0.55 + r() * 0.8,
           angle = r() * Math.PI,
-          keep = r() < thickness;
+          keep = r() < thickness * geography.ecology.grassCover;
         const h = heightAt(px, pz);
         if (!keep || h < 2 || h > 480 || slopeAt(px, pz) > 0.65) continue;
         _q.setFromAxisAngle(_v3.set(0, 1, 0), angle);
@@ -2209,57 +2215,54 @@ const formation = [
 // viewer steers it away; then it is free until the next event. The crossings
 // are found on the same arcs the sky draws, so they cannot drift from it.
 // ---------------------------------------------------------------------------
-const SKY_EVENTS = (() => {
-  const sun = new THREE.Vector3(),
-    moon = new THREE.Vector3();
-  const height = (body, phase) => {
-    skyBodies(phase, sun, moon);
-    return (body === 'sun' ? sun : moon).y;
-  };
-  // How long before and after the crossing the pull lasts, in solar phase, the
-  // sun's own clock, so it is about how high the body stands: a rising body
-  // from its first glow until it stands clear, a setting one from its last
-  // stretch until the afterglow fades, the moon only while its disc is low.
+const SKY_EVENTS = [];
+let SUNRISE, SUNSET;
+function rebuildSkyEvents() {
+  // Event windows follow fractions of this civil day; event positions come
+  // from actual UTC roots. Polar dates legitimately have missing events.
   const spans = {
     sun: { rising: [0.035, 0.07], setting: [0.02, 0.045] },
     moon: { rising: [0.012, 0.03], setting: [0.035, 0.004] },
   };
-  const events = [];
-  const steps = 720;
-  for (const body of ['sun', 'moon']) {
-    let previous = height(body, 0);
-    for (let i = 1; i <= steps; i++) {
-      const next = height(body, i / steps);
-      if (previous < 0 !== next < 0) {
-        let lo = (i - 1) / steps,
-          hi = i / steps;
-        for (let k = 0; k < 24; k++) {
-          const mid = (lo + hi) / 2;
-          if (height(body, mid) < 0 === previous < 0) lo = mid;
-          else hi = mid;
-        }
-        const rising = next > previous;
-        const [before, after] = spans[body][rising ? 'rising' : 'setting'];
-        const phase = (lo + hi) / 2;
-        events.push({ body, rising, phase, solar: solar(phase), before, after });
-      }
-      previous = next;
+  const previousEvents = SKY_EVENTS.slice();
+  SKY_EVENTS.length = 0;
+  const temporarySun = new THREE.Vector3(), temporaryMoon = new THREE.Vector3();
+  const moonEvents = horizonCrossings(utc => {
+    skyBodies((utc - celestialDay.start) / (celestialDay.end - celestialDay.start), temporarySun, temporaryMoon);
+    return temporaryMoon.y;
+  }, celestialDay.start, celestialDay.end);
+  for (const [body, events] of [['sun', celestialDay.events], ['moon', moonEvents]]) {
+    for (const event of events) {
+      const [before, after] = spans[body][event.rising ? 'rising' : 'setting'];
+      const phase = (event.utc - celestialDay.start) / (celestialDay.end - celestialDay.start);
+      const previous = previousEvents.find(candidate => candidate.body === body && candidate.rising === event.rising) ?? {};
+      SKY_EVENTS.push(Object.assign(previous, { body, rising: event.rising, phase, solar: solar(phase), before, after }));
     }
   }
-  return events.sort((a, b) => a.phase - b.phase);
-})();
-const SUNRISE = SKY_EVENTS.find((event) => event.body === 'sun' && event.rising);
-const SUNSET = SKY_EVENTS.find((event) => event.body === 'sun' && !event.rising);
-// Night, sunset to sunrise, on the same crossings the events were found on.
-const NIGHT_SPAN = (((SUNRISE.phase - SUNSET.phase) % 1) + 1) % 1;
-const isNight = (phase) => ((((phase - SUNSET.phase) % 1) + 1) % 1) < NIGHT_SPAN;
+  SKY_EVENTS.sort((a, b) => a.phase - b.phase);
+  SUNRISE = SKY_EVENTS.find(event => event.body === 'sun' && event.rising);
+  SUNSET = SKY_EVENTS.find(event => event.body === 'sun' && !event.rising);
+}
+rebuildSkyEvents();
+function refreshSkyCalendar(preserveHour = true) {
+  const date = dateForSeason(seasonPhase, calendarYear, geography.latitude);
+  const zone = timezoneMode === 'utc' ? 'UTC' : geography.timezone;
+  const key = `${date}/${geography.latitude}/${geography.longitude}/${zone}`;
+  if (celestialDay.key === key) return;
+  const hour = preserveHour ? hourAtPhase(celestialDay, dayPhase) : null;
+  celestialDay = solarDay(date, geography.latitude, geography.longitude, zone);
+  celestialDay.key = key;
+  if (hour !== null && Math.abs(hourAtPhase(celestialDay, dayPhase) - hour) > 1e-8) dayPhase = phaseAtHour(celestialDay, hour);
+  rebuildSkyEvents();
+}
+const isNight = phase => solarPosition(celestialDay.start + phase * (celestialDay.end - celestialDay.start), geography.latitude, geography.longitude).altitude < -0.833;
 const SUNRISE_AZIMUTH = (() => {
-  skyBodies(SUNRISE.phase, _v3, _s3);
+  skyBodies(SUNRISE?.phase ?? (celestialDay.noon - celestialDay.start) / (celestialDay.end - celestialDay.start), _v3, _s3);
   return Math.atan2(_v3.x, _v3.z);
 })();
 const SKY_FADE = 0.015; // solar phase over which a pull comes and goes
 function skyEventWeight(event, phase) {
-  const s = solar(phase) - event.solar;
+  const s = phase - event.phase;
   const d = s - Math.round(s);
   const arriving = sstep(-event.before - SKY_FADE, -event.before, d),
     leaving = sstep(event.after, event.after + SKY_FADE, d);
@@ -2460,8 +2463,7 @@ let forceHigh = null,
 // The opening. A world's first flight is scripted so that every new viewer
 // gets the same sunrise: ten seconds before it, flying abeam of the glow; a
 // turn to face the sun as it clears the horizon; a climb through the deck,
-// with the day stretched so the low sun still sits in the frame and lights
-// the cloud tops; a pause above them; a dive back under; then the flight is
+// at the selected clock rate; a pause above the cloud tops; a dive back under; then the flight is
 // its own. It touches only what the autonomous flight already steers by, the
 // yaw target and the cloud schedule, so the hand-off changes nothing else,
 // and a steer ends it the way a steer releases a sunrise pull. A resumed
@@ -2475,11 +2477,9 @@ const INTRO = {
   aboveBy: 140, // meters over the deck that count as above the clouds
   hold: 10, // seconds above the clouds
   dive: 30, // seconds of descent before the flight is its own
-  stretch: 0.55, // day clock speed while the sun should stay low (the sun's own pace by day is two thirds)
 };
 const intro = { beat: null, at: 0, ended: null };
-let dayRate = 1,
-  dayRateTarget = 1;
+const dayRate = 1; // compatibility probe: the opening never changes the chosen rate
 function updateIntro() {
   if (!intro.beat) return;
   const t = state.t;
@@ -2494,14 +2494,12 @@ function updateIntro() {
     intro.at = t;
   }
   if (intro.beat === 'dive' && t >= intro.at + INTRO.dive) endIntro('flown');
-  dayRateTarget = intro.beat === 'climb' || intro.beat === 'above' ? INTRO.stretch : 1;
 }
 function endIntro(how) {
   if (!intro.beat) return;
   intro.beat = null;
   intro.ended = how;
   cloudOrigin = state.t;
-  dayRateTarget = 1;
 }
 // The title card. As the bird begins its turn toward the sunrise, "Kun Chen
 // Presents" and then "Fly With Me" come up out of a soft blur, hold while the
@@ -2761,6 +2759,7 @@ canvas.addEventListener(
   { passive: false },
 );
 window.addEventListener('keydown', (e) => {
+  if (e.target.closest?.('#cycleControls')) return;
   if (e.target.closest('button, a, input, select, summary') || !running) return;
   if (e.code === 'Space') {
     e.preventDefault();
@@ -3111,6 +3110,9 @@ function saveSettings() {
     camera: { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist },
     daySpeed,
     seasonSpeed,
+    calendarYear,
+    timezoneMode,
+    geography: { latitude: geography.latitude, longitude: geography.longitude, timezone: geography.timezone },
   });
 }
 const muteButton = document.getElementById('muteBtn'),
@@ -3177,7 +3179,7 @@ post.outputNode = fxaa(softDisplay);
 // Day cycle and atmosphere per frame
 // ---------------------------------------------------------------------------
 // A fresh world opens ten seconds before the sunrise the opening flies into.
-let dayPhase = SUNRISE.phase - INTRO.beforeSunrise / DAY_SECONDS;
+let dayPhase = wrapPhase((SUNRISE?.phase ?? (celestialDay.noon - celestialDay.start) / (celestialDay.end - celestialDay.start)) - INTRO.beforeSunrise / DAY_SECONDS);
 const _sunDir = new THREE.Vector3(),
   _moonDir = new THREE.Vector3();
 const BASE_EXPOSURE = 1.05;
@@ -3185,25 +3187,22 @@ const BASE_EXPOSURE = 1.05;
 // rides its own arc, up before dusk and gone before dawn. The flight reads
 // these too.
 function skyBodies(phase, sunOut, moonOut) {
-  const elev = (solar(phase) - 0.25) * Math.PI * 2;
-  sunOut
-    .set(-0.18 - 0.27 * Math.sin(elev), Math.sin(elev) * 0.7, Math.cos(elev) * 0.65 + 0.55)
-    .normalize();
-  const melev = elev + Math.PI + 0.35;
-  moonOut
-    .set(0.3 - 0.2 * Math.sin(melev), Math.sin(melev) * 0.45, -(Math.cos(melev) * 0.5 + 0.45))
-    .normalize();
+  const position = solarPosition(celestialDay.start + phase * (celestialDay.end - celestialDay.start), geography.latitude, geography.longitude);
+  apparentDirection(position, sunOut);
+  // The moon and star field remain the original artistic night companion;
+  // only the solar ephemeris and its events claim astronomical accuracy.
+  horizontalDirection(geography.latitude, -position.declination + 0.08, position.hourAngle + Math.PI + 0.35, moonOut);
 }
 function updateAtmosphere(dt) {
-  dayRate += (dayRateTarget - dayRate) * Math.min(1, dt * 0.8);
-  dayPhase = advancePhase(dayPhase, dt * dayRate, daySpeed, DAY_SECONDS);
   seasonPhase = advancePhase(seasonPhase, dt, seasonSpeed, YEAR_SECONDS);
-  seasonAppearance.update(seasonPhase);
-  evalPalette(solar(dayPhase));
+  refreshSkyCalendar();
+  dayPhase = advancePhase(dayPhase, dt, daySpeed, DAY_SECONDS);
+  seasonAppearance.update(seasonPhase, climateOnDate(geography.profile, celestialDay.date), geography.ecology);
+  evalSolarPalette(solarPosition(celestialDay.start + dayPhase * (celestialDay.end - celestialDay.start), geography.latitude, geography.longitude));
   skyBodies(dayPhase, _sunDir, _moonDir);
   const sy = _sunDir.y;
   const night = sstep(-0.02, -0.2, sy);
-  const sunUp = sstep(-0.025, 0.06, sy);
+  const sunUp = sstep(0, 0.06, sy);
   const moonAbove = sstep(-0.02, 0.12, _moonDir.y);
   const moonLight = sstep(-0.09, -0.2, sy) * moonAbove;
   uNight.value = night;
@@ -3297,8 +3296,9 @@ function restoreFlight(stored) {
     pitch: n('pitch', -1, 1) ?? 0,
     yawRate: n('yawRate', -1, 1) ?? 0,
   });
-  dayPhase = phase % 1;
   seasonPhase = (n('seasonPhase', 0, 1) ?? 0.25) % 1;
+  refreshSkyCalendar(false);
+  dayPhase = stored.clockVersion === 2 ? phase % 1 : phaseAtHour(celestialDay, legacyHourForPhase(phase));
   cloudSchedule = n('cloudSchedule', 0, 1) ?? 0;
   cloudOrigin = n('cloudOrigin') ?? -150;
   const low = stored.low ?? {},
@@ -3334,6 +3334,8 @@ function flightMemory() {
     yawRate: state.yawRate,
     dayPhase,
     seasonPhase,
+    calendarYear,
+    clockVersion: 2,
     cloudSchedule,
     cloudOrigin,
     low: { next: flight.lowNext, until: flight.lowUntil, on: flight.low, amount: flight.lowAmount },
@@ -3361,7 +3363,7 @@ function saveFlight() {
 // ---------------------------------------------------------------------------
 const resumed = restoreFlight(storedFlight);
 if (!resumed) {
-  intro.beat = 'side';
+  intro.beat = SUNRISE ? 'side' : null;
   skyBodies(dayPhase, _sunDir, _moonDir);
 }
 fillAll(Math.round(state.x / CELL), Math.round(state.z / CELL));
@@ -3373,33 +3375,91 @@ let running = false,
   paused = false,
   disposed = false,
   primed = false;
-const cycleControls = createCycleControls({
-  read: () => ({ timeOfDay: solar(dayPhase) * 24, seasonOfYear: seasonPhase * 4, daySpeed, seasonSpeed }),
-  change: (field, value) => {
-    if (disposed || !Number.isFinite(value)) return;
-    if (field === 'timeOfDay' || field === 'daySpeed') {
-      // A deliberate clock setting takes priority over the opening's stretch.
-      // Do not ease an old rate back in after a seek or after unfreezing.
-      endIntro('time-adjusted');
-      dayRate = dayRateTarget = 1;
-    }
-    if (field === 'timeOfDay') dayPhase = phaseForHour(value, solar);
+function timePresets() {
+  return { sunrise: celestialDay.sunrise, noon: celestialDay.noon, sunset: celestialDay.sunset,
+    midnight: celestialDay.start };
+}
+function worldControlsState() {
+  const current = civilTime(celestialDay.start + dayPhase * (celestialDay.end - celestialDay.start), celestialDay.zone);
+  const weather = climateOnDate(geography.profile, celestialDay.date);
+  const ecology = geography.ecology;
+  const eventTime = utc => utc === null ? (celestialDay.polar === 'day' ? 'Polar day' : celestialDay.polar === 'night' ? 'Polar night' : 'No crossing today')
+    : formatHour(civilTime(utc + 30000, celestialDay.zone).hour);
+  const dayMinutes = Math.round(celestialDay.daylight * 60);
+  const offset = `${current.offset < 0 ? '−' : '+'}${String(Math.floor(Math.abs(current.offset) / 60)).padStart(2, '0')}:${String(Math.abs(current.offset) % 60).padStart(2, '0')}`;
+  return { timeOfDay: current.hour, seasonOfYear: seasonPhase * 4, daySpeed, seasonSpeed,
+    date: celestialDay.date, latitude: geography.latitude, longitude: geography.longitude, timezoneMode,
+    timezone: `${celestialDay.zone} · UTC${offset}${timezoneMode === 'auto' && geography.profile.source !== 'ERA5' && geography.timezone === 'UTC' ? ' · local timezone unavailable' : ''}`,
+    sunrise: eventTime(celestialDay.sunrise), sunset: eventTime(celestialDay.sunset),
+    daylight: `${Math.floor(dayMinutes / 60)}h ${dayMinutes % 60}m`, timePresets: timePresets(),
+    climateStatus: geography.status, canRetryClimate: !geography.loading && geography.profile.source !== 'ERA5',
+    temperature: `${weather.low.toFixed(1)} / ${weather.high.toFixed(1)} °C`,
+    precipitation: `${weather.rain.toFixed(1)} mm/day · ${Math.round(ecology.precipitation)} mm/year`,
+    vegetation: ecology.vegetation,
+    variation: weather.samples ? `Across ${Math.round(weather.samples)} years: low σ ${weather.lowDeviation.toFixed(1)} °C · high σ ${weather.highDeviation.toFixed(1)} °C. These are climate averages, not today's weather.`
+      : 'Latitude-based estimate; local rain, terrain and coast effects need climate data.',
+    hemisphere: `${geography.latitude < 0 ? 'Southern' : 'Northern'} hemisphere${Math.abs(geography.latitude) < 23.44 ? ' · tropical wet/dry patterns come from the climate data' : ''}` };
+}
+function previewWorldChange() {
+  updateAtmosphere(0);
+  updateSunward();
+  Object.assign(nightward, { night: null, armed: false, done: false, turning: false, pull: 0 });
+  updateNightward(0);
+  if ((paused || !running) && !document.hidden) renderer.setAnimationLoop(frame);
+}
+function changeWorldControl(field, value) {
+  if (disposed) return;
+  if (field === 'retryClimate') { geography.load(0); return; }
+  if (field === 'location') {
+    if (value && validCoordinates(value.latitude, value.longitude)) geography.setLocation(value.latitude, value.longitude);
+    return;
+  }
+  if (field === 'date') {
+    if (!validDate(value)) return;
+    calendarYear = +value.slice(0, 4); seasonPhase = seasonForDate(value, geography.latitude);
+  } else if (field === 'timezoneMode') {
+    if (!['utc', 'auto'].includes(value)) return;
+    timezoneMode = value;
+  } else if (field === 'timePreset') {
+    const utc = timePresets()[value];
+    if (!Number.isFinite(utc)) return;
+    dayPhase = wrapPhase((utc - celestialDay.start) / (celestialDay.end - celestialDay.start));
+  } else {
+    if (!Number.isFinite(value)) return;
+    if (field === 'timeOfDay') dayPhase = phaseAtHour(celestialDay, value);
     if (field === 'seasonOfYear') seasonPhase = wrapPhase(value / 4);
     if (field === 'daySpeed') daySpeed = validCycleSpeed(value, daySpeed);
     if (field === 'seasonSpeed') seasonSpeed = validCycleSpeed(value, seasonSpeed);
-    updateAtmosphere(0);
-    if (field === 'timeOfDay') {
-      // Rebase sky-driven steering to the newly chosen sky, not the old event.
-      updateSunward();
-      Object.assign(nightward, { night: null, armed: false, done: false, turning: false, pull: 0 });
-      updateNightward(0);
-    }
-    if (field === 'daySpeed' || field === 'seasonSpeed') saveSettings();
-    if (paused && !document.hidden) renderer.setAnimationLoop(frame);
-  },
-  commit: saveFlight,
-});
+  }
+  endIntro('world-adjusted');
+  previewWorldChange(); saveSettings();
+}
+const cycleControls = createCycleControls({ read: worldControlsState, change: changeWorldControl, commit: saveFlight });
+let southernHemisphere = geography.latitude < 0;
+geography.onChange = ({ climateChanged }) => {
+  if (disposed) return;
+  if (southernHemisphere !== (geography.latitude < 0)) {
+    seasonPhase = seasonForDate(celestialDay.date, geography.latitude);
+    southernHemisphere = geography.latitude < 0;
+  }
+  if (climateChanged) {
+    geographicBase.value.set(geography.ecology.temperature, geography.ecology.moisture);
+    treeCellX = treeCellZ = grassX = grassZ = NaN;
+    placeTrees(state.x, state.z);
+    state.y = Math.max(state.y, obstacleFloor(state.x, state.z) + 8);
+    placeGrass(camera.position.x, camera.position.z);
+    endIntro('location-adjusted');
+    previewWorldChange();
+    shareUrl.searchParams.set('lat', String(geography.latitude));
+    shareUrl.searchParams.set('lon', String(geography.longitude));
+    document.getElementById('shareLink').href = shareUrl.toString();
+    saveSettings(); saveFlight();
+  }
+  cycleControls.sync(true);
+};
 cycleControls.sync(true);
+geography.load();
+enableOffline();
 let openingTimer, disposalTask;
 let timestampPending = false,
   timestampTask = Promise.resolve(),
@@ -3607,6 +3667,8 @@ function dispose() {
   running = false;
   renderer.setAnimationLoop(null);
   clearTimeout(openingTimer);
+  geography.dispose();
+  cycleControls.dispose();
   const audioTask = audio.dispose();
   // Readback buffers must finish mapping before renderer disposal destroys them.
   disposalTask = Promise.all([timestampTask, captureTask, audioTask]).then(() => {
@@ -3776,7 +3838,11 @@ window.__fly = {
     return ready;
   },
   solar,
-  nightShare: NIGHT_SHARE,
+  get nightShare() { return 1 - celestialDay.daylight * 3600000 / (celestialDay.end - celestialDay.start); },
+  get astronomy() { return { ...celestialDay, latitude: geography.latitude, longitude: geography.longitude }; },
+  get environment() { return worldControlsState(); },
+  get climate() { return { source: geography.profile.source, ecology: geography.ecology, daily: climateOnDate(geography.profile, celestialDay.date) }; },
+  setEnvironment: changeWorldControl,
   deck: DECK_Y,
   get cloudCycle() {
     return (((state.t - cloudOrigin) % 300) + 300) % 300;

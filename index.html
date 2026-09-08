@@ -275,7 +275,7 @@
         position: absolute;
         left: 0;
         bottom: calc(100% + 0.6rem);
-        width: min(360px, calc(100vw - 2rem));
+        width: min(460px, calc(100vw - 2rem));
         max-height: calc(100dvh - 8rem);
         overflow-y: auto;
         box-sizing: border-box;
@@ -300,6 +300,19 @@
       #cyclePanel button:hover { background: #e9e4dc28; }
       #cyclePanel select { width: 100%; min-height: 44px; padding: 0.4rem; font: inherit; color: inherit; background: #203b30; border: 1px solid #e9e4dc55; border-radius: 6px; }
       #cyclePanel p { font-size: 0.8rem; line-height: 1.5; margin: 0.9rem 0 0; opacity: 0.85; }
+      #cyclePanel .world-map { margin: 0.6rem 0; }
+      #worldMap { display: block; width: 100%; aspect-ratio: 2; border-radius: 8px; background: #102e40; touch-action: none; cursor: crosshair; }
+      #cyclePanel .map-toolbar { display: flex; gap: 0.4rem; margin-top: 0.4rem; }
+      #cyclePanel .map-toolbar button { padding: 0 0.6rem; }
+      #cyclePanel .coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; margin: 0.6rem 0; }
+      #cyclePanel input[type='number'], #cyclePanel input[type='date'] { width: 100%; min-height: 44px; box-sizing: border-box; padding: 0.4rem; font: inherit; color: inherit; background: #203b30; border: 1px solid #e9e4dc55; border-radius: 6px; }
+      #cyclePanel .climate-stats { display: grid; gap: 0.35rem; margin-top: 0.65rem; line-height: 1.45; }
+      #cyclePanel .climate-stats > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.3rem; }
+      #cyclePanel .climate-stats output { text-align: right; }
+      #cyclePanel button:disabled { opacity: 0.45; cursor: default; }
+      #cyclePanel button[hidden] { display: none; }
+      #cyclePanel .apply-location { width: 100%; }
+      #cyclePanel a { font-size: inherit; padding: 0; min-width: 0; min-height: 0; display: inline; }
       :focus-visible {
         outline: 2px solid #f1e5b8;
         outline-offset: 5px;
@@ -385,19 +398,58 @@
         pause
       </button>
       <details id="cycleControls">
-        <summary>time &amp; seasons</summary>
+        <summary>world, time &amp; seasons</summary>
         <div id="cyclePanel">
           <fieldset>
+            <legend>Location</legend>
+            <div class="world-map">
+              <canvas id="worldMap" tabindex="0" aria-describedby="mapInstructions" width="420" height="210"></canvas>
+              <div class="map-toolbar" role="group" aria-label="Map zoom">
+                <button id="mapZoomIn" type="button" aria-label="Zoom in">+</button>
+                <button id="mapZoomOut" type="button" aria-label="Zoom out">−</button>
+                <button id="mapReset" type="button">Whole world</button>
+              </div>
+              <p id="mapInstructions">Click to choose. Drag to pan; scroll or pinch to zoom. Map works offline.</p>
+              <p id="offlineStatus">Map included in this page; no online tiles.</p>
+            </div>
+            <label for="locationPreset">Quick location</label>
+            <select id="locationPreset"><option value="" disabled>Custom location</option></select>
+            <form id="locationForm">
+              <div class="coordinate-grid">
+                <div><label for="latitudeNumber">Latitude · N + / S −</label><input id="latitudeNumber" type="number" min="-90" max="90" step="0.001" value="39.9" required /><input id="latitude" type="range" min="-90" max="90" step="0.001" value="39.9" aria-label="Latitude scale" /></div>
+                <div><label for="longitudeNumber">Longitude · E + / W −</label><input id="longitudeNumber" type="number" min="-180" max="180" step="0.001" value="116.4" required /><input id="longitude" type="range" min="-180" max="180" step="0.001" value="116.4" aria-label="Longitude scale" /></div>
+              </div>
+              <button class="apply-location" type="submit">Apply coordinates</button>
+            </form>
+            <p id="climateStatus" role="status">ERA5 · 1991–2020 daily normals</p>
+            <button id="retryClimate" type="button" hidden>Retry climate</button>
+            <div class="climate-stats">
+              <div><span>Typical low / high</span><output id="temperatureValue"></output></div>
+              <div><span>Precipitation</span><output id="precipitationValue"></output></div>
+              <div><span>Estimated vegetation</span><output id="vegetationValue"></output></div>
+            </div>
+            <p id="climateVariation"></p>
+            <p>Climate data: <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo / ERA5</a>, averaged by calendar day. Loaded locations are cached offline. The landscape is procedural, with climate-estimated vegetation.</p>
+          </fieldset>
+          <fieldset>
             <legend>Time of day</legend>
+            <label for="timezoneMode">Clock</label>
+            <select id="timezoneMode"><option value="auto">Local time · automatic timezone</option><option value="utc">UTC</option></select>
+            <p id="timezoneValue"></p>
             <div class="cycle-label"><label for="timeOfDay">Hour</label><output id="timeValue" for="timeOfDay" aria-live="off">06:00</output></div>
             <input id="timeOfDay" type="range" min="0" max="24" step="0.016666666666666666" value="6" list="timeTicks" />
             <datalist id="timeTicks"><option value="0"></option><option value="6"></option><option value="12"></option><option value="18"></option><option value="24"></option></datalist>
             <div class="cycle-scale" aria-hidden="true"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
             <div class="cycle-presets" role="group" aria-label="Time presets">
-              <button data-cycle="timeOfDay" data-value="6">Dawn</button>
-              <button data-cycle="timeOfDay" data-value="12">Day</button>
-              <button data-cycle="timeOfDay" data-value="18">Dusk</button>
-              <button data-cycle="timeOfDay" data-value="0">Night</button>
+              <button data-time-preset="sunrise">Sunrise</button>
+              <button data-time-preset="noon">Solar noon</button>
+              <button data-time-preset="sunset">Sunset</button>
+              <button data-time-preset="midnight">Midnight</button>
+            </div>
+            <div class="climate-stats">
+              <div><span>Sunrise</span><output id="sunriseValue"></output></div>
+              <div><span>Sunset</span><output id="sunsetValue"></output></div>
+              <div><span>Daylight</span><output id="daylightValue"></output></div>
             </div>
             <div class="cycle-label"><label for="daySpeed">Day speed</label><output id="daySpeedValue" for="daySpeed" aria-live="off">1× · day in 10 min</output></div>
             <input id="daySpeed" type="range" min="0" max="60" step="0.25" value="1" />
@@ -409,6 +461,9 @@
           </fieldset>
           <fieldset>
             <legend>Season</legend>
+            <label for="calendarDate">Calendar date</label>
+            <input id="calendarDate" type="date" min="1901-01-01" max="2099-12-31" />
+            <p id="hemisphereValue"></p>
             <div class="cycle-label"><label for="seasonOfYear">Year</label><output id="seasonValue" for="seasonOfYear" aria-live="off">Summer</output></div>
             <input id="seasonOfYear" type="range" min="0" max="4" step="0.01" value="1" list="seasonTicks" />
             <datalist id="seasonTicks"><option value="0"></option><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option></datalist>
@@ -427,7 +482,8 @@
               <option value="0">Frozen</option><option value="0.25">Slow · ¼×</option><option value="1" selected>Normal · 1×</option><option value="4">Fast · 4×</option><option value="12">Very fast · 12×</option><option value="60">Timelapse · 60×</option>
             </select>
           </fieldset>
-          <p>Choose any moment without changing its speed. Freeze either cycle independently; Pause holds the whole flight.</p>
+          <p>Choose any moment without changing its speed. Date and hour advance independently; the selected calendar year repeats. Pause holds the whole flight.</p>
+          <p>Sunrise and sunset use a level, unobstructed horizon and standard atmospheric refraction. Map: <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener noreferrer">Natural Earth</a>, public domain.</p>
         </div>
       </details>
       <span id="backendLabel" class="dim"></span>
