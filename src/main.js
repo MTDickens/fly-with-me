@@ -64,6 +64,9 @@ import { fxaa } from 'three/addons/tsl/display/FXAANode.js';
 import { hash2, perlin2, fbm, ridged, sstep, mulberry32 } from './noise.js';
 import { createWaterMaterial } from './water.js';
 import { createMilkyWay } from './milky-way.js';
+import { DAY_SECONDS, YEAR_SECONDS, advancePhase, phaseForHour, validCycleSpeed, wrapPhase } from './cycles.js';
+import { createSeasonAppearance } from './seasons.js';
+import { createCycleControls } from './cycle-controls.js';
 import { SWATCH, LEAVES, swatchColor, colorProblem, validateLibrary, validateBaked, BUDGET } from '../library/contract.js';
 import * as registry from '../library/index.js';
 // Shader motion follows simulation time, including pause and hidden tabs.
@@ -80,7 +83,6 @@ const WATER_CELL = CELL * 4;
 const SEA_LEVEL = 0;
 const DECK_Y = 520; // cloud deck altitude
 const SPEED = 40; // bird speed, m/s
-const DAY_SECONDS = 600; // one full turn of the day clock
 const wrapAngle = (a) => a - Math.round(a / (Math.PI * 2)) * Math.PI * 2;
 // Night is a quarter of the cycle. The sun keeps its own clock, `solar`: one
 // pace while it is up and a faster one while it is down, the change blended
@@ -142,6 +144,10 @@ const finite = (v, min = -Infinity, max = Infinity) =>
   typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max ? v : null;
 const storedSettings = remember.read(SETTINGS_KEY) ?? {};
 const storedFlight = remember.read(RESUME_KEY);
+let daySpeed = validCycleSpeed(storedSettings.daySpeed),
+  seasonSpeed = validCycleSpeed(storedSettings.seasonSpeed);
+let seasonPhase = 0.25; // summer starts with the original landscape
+const seasonAppearance = createSeasonAppearance();
 
 // ---------------------------------------------------------------------------
 // Seed. ?seed=<number> reproduces a world and always wins; without one the
@@ -917,9 +923,10 @@ let terrainMat;
     });
     ground.divAssign(total);
     rock.divAssign(total);
+    ground.assign(seasonAppearance.ground(ground, ct, cm));
     ground.assign(mix(palette.seaFloor, ground, smoothstep(-10.0, 0.5, h)));
     ground.assign(mix(ground, rock, smoothstep(0.32, 0.55, slope)));
-    const snowLine = temp.mul(-420.0).add(560.0);
+    const snowLine = seasonAppearance.snowLine(temp.mul(-420.0).add(560.0), ct);
     const snowAmt = smoothstep(snowLine.sub(40.0), snowLine.add(40.0), h).mul(smoothstep(0.75, 0.45, slope));
     ground.assign(mix(ground, palette.snow, snowAmt));
     return stylize(ground);
@@ -1191,12 +1198,12 @@ function woodMaterial(tint) {
   m.positionNode = grown(positionLocal);
   return m;
 }
-function leafMaterial(map, visible, position) {
-  const m = litMaterial(paintedSample(map), {
+function leafMaterial(map, visible, position, kind) {
+  const m = litMaterial(seasonAppearance.foliage(paintedSample(map), kind), {
     basic: { side: THREE.DoubleSide, alphaTest: 0.04, alphaToCoverage: true },
   });
   m.normalNode = transformNormalToView(normalLocal);
-  m.emissiveNode = texture(map).rgb.mul(0.025);
+  m.emissiveNode = seasonAppearance.foliage(texture(map), kind).rgb.mul(0.025);
   m.opacityNode = visible;
   m.positionNode = grown(position.add(sway));
   return m;
@@ -1374,10 +1381,10 @@ function bakeSpecies(id, spec) {
     const cardScale = mix(float(1).sub(crownBand), mix(1, distantScale, crownBand), cardKept);
     pool.crown = new THREE.InstancedMesh(
       crownGeo,
-      leafMaterial(map, float(1).sub(distantCrown), cardWorld.add(positionLocal.sub(cardWorld).mul(cardScale))),
+      leafMaterial(map, float(1).sub(distantCrown), cardWorld.add(positionLocal.sub(cardWorld).mul(cardScale)), spec.leaf),
       MAX_TREES,
     );
-    pool.distant = new THREE.InstancedMesh(distantGeo, leafMaterial(map, distantCrown, positionLocal), MAX_TREES);
+    pool.distant = new THREE.InstancedMesh(distantGeo, leafMaterial(map, distantCrown, positionLocal, spec.leaf), MAX_TREES);
     // The full crown also reads the instance spin, interleaved with the base
     // so the two share one vertex buffer: WebGPU allows eight per material.
     const leafInstance = new THREE.InstancedInterleavedBuffer(new Float32Array(MAX_TREES * 7), 7, 1);
@@ -1703,7 +1710,7 @@ for (let i = 0; i < 96; i++) {
 const grassMap = new THREE.CanvasTexture(grassCanvas);
 grassMap.colorSpace = THREE.SRGBColorSpace;
 grassMap.anisotropy = 4;
-const grassMat = litMaterial(paintedSample(grassMap), {
+const grassMat = litMaterial(seasonAppearance.foliage(paintedSample(grassMap)), {
   basic: { side: THREE.DoubleSide, alphaTest: 0.08, alphaToCoverage: true },
 });
 grassMat.normalNode = transformNormalToView(vec3(0, 1, 0));
@@ -2754,7 +2761,7 @@ canvas.addEventListener(
   { passive: false },
 );
 window.addEventListener('keydown', (e) => {
-  if (e.target.closest('button, a, input') || !running) return;
+  if (e.target.closest('button, a, input, select, summary') || !running) return;
   if (e.code === 'Space') {
     e.preventDefault();
     togglePause();
@@ -3102,6 +3109,8 @@ function saveSettings() {
     volume: audio.volume,
     muted: audio.muted,
     camera: { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist },
+    daySpeed,
+    seasonSpeed,
   });
 }
 const muteButton = document.getElementById('muteBtn'),
@@ -3187,7 +3196,9 @@ function skyBodies(phase, sunOut, moonOut) {
 }
 function updateAtmosphere(dt) {
   dayRate += (dayRateTarget - dayRate) * Math.min(1, dt * 0.8);
-  dayPhase = (dayPhase + (dt * dayRate) / DAY_SECONDS) % 1;
+  dayPhase = advancePhase(dayPhase, dt * dayRate, daySpeed, DAY_SECONDS);
+  seasonPhase = advancePhase(seasonPhase, dt, seasonSpeed, YEAR_SECONDS);
+  seasonAppearance.update(seasonPhase);
   evalPalette(solar(dayPhase));
   skyBodies(dayPhase, _sunDir, _moonDir);
   const sy = _sunDir.y;
@@ -3287,6 +3298,7 @@ function restoreFlight(stored) {
     yawRate: n('yawRate', -1, 1) ?? 0,
   });
   dayPhase = phase % 1;
+  seasonPhase = (n('seasonPhase', 0, 1) ?? 0.25) % 1;
   cloudSchedule = n('cloudSchedule', 0, 1) ?? 0;
   cloudOrigin = n('cloudOrigin') ?? -150;
   const low = stored.low ?? {},
@@ -3321,6 +3333,7 @@ function flightMemory() {
     pitch: state.pitch,
     yawRate: state.yawRate,
     dayPhase,
+    seasonPhase,
     cloudSchedule,
     cloudOrigin,
     low: { next: flight.lowNext, until: flight.lowUntil, on: flight.low, amount: flight.lowAmount },
@@ -3360,6 +3373,33 @@ let running = false,
   paused = false,
   disposed = false,
   primed = false;
+const cycleControls = createCycleControls({
+  read: () => ({ timeOfDay: solar(dayPhase) * 24, seasonOfYear: seasonPhase * 4, daySpeed, seasonSpeed }),
+  change: (field, value) => {
+    if (disposed || !Number.isFinite(value)) return;
+    if (field === 'timeOfDay' || field === 'daySpeed') {
+      // A deliberate clock setting takes priority over the opening's stretch.
+      // Do not ease an old rate back in after a seek or after unfreezing.
+      endIntro('time-adjusted');
+      dayRate = dayRateTarget = 1;
+    }
+    if (field === 'timeOfDay') dayPhase = phaseForHour(value, solar);
+    if (field === 'seasonOfYear') seasonPhase = wrapPhase(value / 4);
+    if (field === 'daySpeed') daySpeed = validCycleSpeed(value, daySpeed);
+    if (field === 'seasonSpeed') seasonSpeed = validCycleSpeed(value, seasonSpeed);
+    updateAtmosphere(0);
+    if (field === 'timeOfDay') {
+      // Rebase sky-driven steering to the newly chosen sky, not the old event.
+      updateSunward();
+      Object.assign(nightward, { night: null, armed: false, done: false, turning: false, pull: 0 });
+      updateNightward(0);
+    }
+    if (field === 'daySpeed' || field === 'seasonSpeed') saveSettings();
+    if (paused && !document.hidden) renderer.setAnimationLoop(frame);
+  },
+  commit: saveFlight,
+});
+cycleControls.sync(true);
 let openingTimer, disposalTask;
 let timestampPending = false,
   timestampTask = Promise.resolve(),
@@ -3404,6 +3444,7 @@ function advance(dt, sound = true) {
   updateCamera(dt);
   placeGrass(camera.position.x, camera.position.z);
   updateAtmosphere(dt);
+  cycleControls.sync();
   if (performance.now() - lastSave > 2000) saveFlight();
 }
 // A small linear picture of the scene as it stands, for checks that must see
@@ -3679,6 +3720,15 @@ window.__fly = {
   },
   set dayPhase(v) {
     dayPhase = ((v % 1) + 1) % 1;
+  },
+  get seasonPhase() {
+    return seasonPhase;
+  },
+  set seasonPhase(v) {
+    if (Number.isFinite(v)) seasonPhase = wrapPhase(v);
+  },
+  get cycleSpeeds() {
+    return { day: daySpeed, season: seasonSpeed };
   },
   set forceHigh(v) {
     forceHigh = v;

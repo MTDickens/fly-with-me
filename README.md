@@ -41,7 +41,9 @@
 - The page opens on a white veil, then stands still behind one **Begin** button; nothing moves and no sound plays until you press it. Sound is synthesized in the browser, with an on/off switch and a volume slider that starts at half.
 - Do nothing and the bird flies itself. Drag with the left button to orbit the bird, and the view stays where you leave it; drag with the right button to steer, up and down as well, and the bird flies where you look. The wheel zooms, touch steers, and the arrow keys nudge a turn or a climb that fades after a few seconds.
 - **Pause**, or space with the canvas focused, stops the flight and the sound together. A reduced-motion preference starts the page paused.
-- The page remembers your sound settings, your framing, and the bird's exact place, course and time of day, and resumes there after Begin. `?seed=<number>` in the address opens that world fresh; the share link carries the seed.
+- Open **time & seasons** in the corner to choose an hour with the 24-hour slider or jump to **Dawn**, **Day**, **Dusk**, or **Night**. The year slider blends continuously through **Spring**, **Summer**, **Autumn**, and **Winter**; the four buttons jump straight to a season. Seasonal foliage, grass and snow cover change together.
+- Each cycle has its own speed slider and presets, from **Frozen** to **60×**. At **1×**, a day takes ten minutes (with a shorter night) and a full seasonal year takes forty minutes. Choosing a moment keeps its speed, and changing speed continues from that moment. Manual day controls release the opening's special sunrise timing. You can adjust either cycle while the flight is paused to preview a still scene.
+- The page remembers your sound settings, framing, both cycle speeds, and the bird's exact place, course, time of day and season, and resumes there after Begin. `?seed=<number>` in the address selects that world; the share link carries the seed.
 - WebGPU is used when available, over HTTPS or localhost; `?webgl=1` forces WebGL2, and the desktop corner names the backend.
 
 ## Read on

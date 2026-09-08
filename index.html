@@ -260,6 +260,46 @@
       #hud[inert] {
         visibility: hidden;
       }
+      #cycleControls summary {
+        cursor: pointer;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        list-style: none;
+      }
+      #cycleControls summary::-webkit-details-marker { display: none; }
+      #cycleControls summary::after { content: '+'; }
+      #cycleControls[open] summary::after { content: '−'; }
+      #cyclePanel {
+        position: absolute;
+        left: 0;
+        bottom: calc(100% + 0.6rem);
+        width: min(360px, calc(100vw - 2rem));
+        max-height: calc(100dvh - 8rem);
+        overflow-y: auto;
+        box-sizing: border-box;
+        padding: 1rem;
+        border: 1px solid #e9e4dc33;
+        border-radius: 12px;
+        background: rgba(20, 36, 29, 0.96);
+        font-size: 0.875rem;
+        letter-spacing: normal;
+        text-shadow: none;
+        color-scheme: dark;
+      }
+      #cyclePanel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+      #cyclePanel fieldset + fieldset { margin-top: 1rem; border-top: 1px solid #e9e4dc33; padding-top: 1rem; }
+      #cyclePanel legend { font-weight: 600; padding: 0; margin-bottom: 0.35rem; }
+      #cyclePanel .cycle-label { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; justify-content: space-between; align-items: baseline; }
+      #cyclePanel output { font-variant-numeric: tabular-nums; color: #f1e5b8; }
+      #cyclePanel input[type='range'] { width: 100%; display: block; }
+      #cyclePanel .cycle-scale { display: flex; justify-content: space-between; gap: 0.2rem; font-size: 0.75rem; opacity: 0.85; overflow-wrap: anywhere; }
+      #cyclePanel .cycle-presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(4.2rem, 1fr)); gap: 0.35rem; margin: 0.55rem 0 0.75rem; }
+      #cyclePanel button { justify-content: center; text-decoration: none; background: #e9e4dc12; border: 1px solid #e9e4dc33; border-radius: 6px; }
+      #cyclePanel button:hover { background: #e9e4dc28; }
+      #cyclePanel select { width: 100%; min-height: 44px; padding: 0.4rem; font: inherit; color: inherit; background: #203b30; border: 1px solid #e9e4dc55; border-radius: 6px; }
+      #cyclePanel p { font-size: 0.8rem; line-height: 1.5; margin: 0.9rem 0 0; opacity: 0.85; }
       :focus-visible {
         outline: 2px solid #f1e5b8;
         outline-offset: 5px;
@@ -344,6 +384,52 @@
       <button id="pauseBtn" aria-label="Pause flight" title="Pause flight" aria-pressed="false" disabled>
         pause
       </button>
+      <details id="cycleControls">
+        <summary>time &amp; seasons</summary>
+        <div id="cyclePanel">
+          <fieldset>
+            <legend>Time of day</legend>
+            <div class="cycle-label"><label for="timeOfDay">Hour</label><output id="timeValue" for="timeOfDay" aria-live="off">06:00</output></div>
+            <input id="timeOfDay" type="range" min="0" max="24" step="0.016666666666666666" value="6" list="timeTicks" />
+            <datalist id="timeTicks"><option value="0"></option><option value="6"></option><option value="12"></option><option value="18"></option><option value="24"></option></datalist>
+            <div class="cycle-scale" aria-hidden="true"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
+            <div class="cycle-presets" role="group" aria-label="Time presets">
+              <button data-cycle="timeOfDay" data-value="6">Dawn</button>
+              <button data-cycle="timeOfDay" data-value="12">Day</button>
+              <button data-cycle="timeOfDay" data-value="18">Dusk</button>
+              <button data-cycle="timeOfDay" data-value="0">Night</button>
+            </div>
+            <div class="cycle-label"><label for="daySpeed">Day speed</label><output id="daySpeedValue" for="daySpeed" aria-live="off">1× · day in 10 min</output></div>
+            <input id="daySpeed" type="range" min="0" max="60" step="0.25" value="1" />
+            <div class="cycle-scale" aria-hidden="true"><span>Frozen</span><span>60×</span></div>
+            <select id="daySpeedPreset" aria-label="Day speed preset">
+              <option value="" disabled>Custom speed</option>
+              <option value="0">Frozen</option><option value="0.25">Slow · ¼×</option><option value="1" selected>Normal · 1×</option><option value="4">Fast · 4×</option><option value="12">Very fast · 12×</option><option value="60">Timelapse · 60×</option>
+            </select>
+          </fieldset>
+          <fieldset>
+            <legend>Season</legend>
+            <div class="cycle-label"><label for="seasonOfYear">Year</label><output id="seasonValue" for="seasonOfYear" aria-live="off">Summer</output></div>
+            <input id="seasonOfYear" type="range" min="0" max="4" step="0.01" value="1" list="seasonTicks" />
+            <datalist id="seasonTicks"><option value="0"></option><option value="1"></option><option value="2"></option><option value="3"></option><option value="4"></option></datalist>
+            <div class="cycle-scale" aria-hidden="true"><span>Spring</span><span>Summer</span><span>Autumn</span><span>Winter</span><span>Spring</span></div>
+            <div class="cycle-presets" role="group" aria-label="Season presets">
+              <button data-cycle="seasonOfYear" data-value="0">Spring</button>
+              <button data-cycle="seasonOfYear" data-value="1">Summer</button>
+              <button data-cycle="seasonOfYear" data-value="2">Autumn</button>
+              <button data-cycle="seasonOfYear" data-value="3">Winter</button>
+            </div>
+            <div class="cycle-label"><label for="seasonSpeed">Season speed</label><output id="seasonSpeedValue" for="seasonSpeed" aria-live="off">1× · year in 40 min</output></div>
+            <input id="seasonSpeed" type="range" min="0" max="60" step="0.25" value="1" />
+            <div class="cycle-scale" aria-hidden="true"><span>Frozen</span><span>60×</span></div>
+            <select id="seasonSpeedPreset" aria-label="Season speed preset">
+              <option value="" disabled>Custom speed</option>
+              <option value="0">Frozen</option><option value="0.25">Slow · ¼×</option><option value="1" selected>Normal · 1×</option><option value="4">Fast · 4×</option><option value="12">Very fast · 12×</option><option value="60">Timelapse · 60×</option>
+            </select>
+          </fieldset>
+          <p>Choose any moment without changing its speed. Freeze either cycle independently; Pause holds the whole flight.</p>
+        </div>
+      </details>
       <span id="backendLabel" class="dim"></span>
     </div>
 

@@ -67,6 +67,8 @@ Repeat with `webgl=1` and with seeds `0` and `4294967295`, then once on the bund
 
 After sky changes, also run `node tests/galaxy-checks.mjs` and evaluate `tests/night-checks.js` the way the flight checks are, over the same seed, backend and bundle matrix. The CPU checks exercise deterministic, bounded, periodic dust and light, and the brightest place the flight steers by; the browser checks read pixels for stars and colored structure under painted clouds, stability while paused, no stellar light in daylight, extinction through the cloud deck, fixed allocations and full disposal.
 
+After cycle or seasonal-surface changes, run `node tests/cycle-checks.mjs`, then load `tests/cycle-checks.js` and call `cycleChecks()` in the browser over that same matrix. It checks sliders and presets, independent and frozen rates, paused redraws, year wrap, custom-speed persistence, older saves, keyboard isolation, and seasonal pixels at the same place and hour. For a visual comparison with the original landscape, freeze the year at **Summer** in both views before running `tools/parity.js`.
+
 By hand: compare renders with the approved looks described in `AGENTS.md`, at the same seed and vantage, and check mobile and landscape layouts, native dragging, cloud crossings and a full day cycle. Physical-phone performance needs a device; no universal 60 fps claim is made.
 
 ## Measuring what a change costs
